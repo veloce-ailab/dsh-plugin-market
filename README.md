@@ -1,0 +1,18 @@
+# DSH Plugin Market
+
+This first version supplies the configuration editor that the future market will use; it does not implement discovery or installation yet.
+
+Install this repository into a Web profile:
+
+```powershell
+pnpm dsh plugin --profile web add D:\dev\dsh\plugins\market
+pnpm dsh web
+```
+
+Its bundle adds `dsh-plugin-market` automatically. The plugin then adds a **插件配置** button at the lower right of the Web UI. It displays each live Loader entry's composed configuration and lets the user save an explicit profile override.
+
+The configuration endpoint is intentionally limited to loopback clients, even if the Web UI has been bound to a LAN address.
+
+Saving appends one id-targeted row to the active profile's `cordis.patch.yml`. Existing YAML is never re-serialized, so comments and every untouched user patch stay unchanged. Clicking Save always appends an explicit patch, including when the value equals the current effective configuration.
+
+Cordis replaces a whole `config` value for an id-targeted patch; it does not merge individual fields. The editor therefore saves the complete JSON configuration for the selected plugin. A true generic per-field patch cannot be implemented only by this plugin because the underlying Cordis patch format has no field-level operation.
