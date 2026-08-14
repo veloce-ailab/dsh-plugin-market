@@ -78,11 +78,15 @@ interface MarketPackage {
   description?: string
   latest?: string
   installedVersion?: string
+  bundle?: boolean
 }
 
 interface PackageMetadata {
   versions: readonly string[]
+  loadableVersions: readonly string[]
   latest?: string
+  loadable: boolean
+  bundle: boolean
 }
 
 interface CuratedPlugin {
@@ -198,6 +202,16 @@ function isPackageName(value: string): boolean {
   return /^(?:[a-z0-9][a-z0-9._-]*|@[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*)$/.test(value)
 }
 
+/** Identify whether a package can be imported and whether DSH owns it as a bundle. */
+function packageRole(value: unknown): { loadable: boolean, bundle: boolean } {
+  const manifest = record(value)
+  const bundle = record(record(manifest?.dsh)?.bundle) !== undefined
+  return {
+    loadable: typeof manifest?.main === 'string' || manifest?.exports !== undefined,
+    bundle,
+  }
+}
+
 /** Read a JSON resource with an error that is safe to show in the local UI. */
 async function npmJson(url: string): Promise<unknown> {
   const response = await fetch(url, { headers: { accept: 'application/json' } })
@@ -292,11 +306,15 @@ async function npmPackageMetadata(name: string): Promise<PackageMetadata & { des
   const versions = Object.keys(record(value?.versions) ?? {}).filter(version => /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version))
   const tags = record(value?.['dist-tags'])
   const latest = typeof tags?.latest === 'string' ? tags.latest : undefined
+  const role = packageRole(record(value?.versions)?.[latest ?? ''])
+  const versionRecords = record(value?.versions) ?? {}
   return {
     versions: latest !== undefined && versions.includes(latest)
       ? [latest, ...versions.filter(version => version !== latest).sort((left, right) => right.localeCompare(left, undefined, { numeric: true }))]
       : versions.sort((left, right) => right.localeCompare(left, undefined, { numeric: true })),
+    loadableVersions: versions.filter(version => packageRole(versionRecords[version]).loadable),
     ...(latest === undefined ? {} : { latest }),
+    ...role,
     ...(typeof value?.description === 'string' ? { description: value.description } : {}),
   }
 }
@@ -315,6 +333,11 @@ async function installedVersion(root: string, name: string): Promise<string | un
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
     throw error
   }
+}
+
+/** Inspect the installed manifest before turning a package into a Loader row. */
+async function installedPackageRole(root: string, name: string): Promise<{ loadable: boolean, bundle: boolean }> {
+  return packageRole(JSON.parse(await readFile(join(root, 'node_modules', name, 'package.json'), 'utf8')))
 }
 
 /** Read direct dependencies declared by the Web profile. */
@@ -369,9 +392,15 @@ async function npmPackages(root: string): Promise<readonly MarketPackage[]> {
       ...(metadata.description === undefined ? {} : { description: metadata.description }),
       ...(metadata.latest === undefined ? {} : { latest: metadata.latest }),
       ...(installed === undefined ? {} : { installedVersion: installed }),
+      ...(metadata.bundle ? { bundle: true } : {}),
+      loadable: metadata.loadable,
     }
   }))
-  const packages = results.flatMap(result => result.status === 'fulfilled' ? [result.value] : [])
+  const packages = results.flatMap(result => {
+    if (result.status !== 'fulfilled' || !result.value.loadable) return []
+    const { loadable: _loadable, ...plugin } = result.value
+    return [plugin]
+  })
   packageCache = { expiresAt: Date.now() + PACKAGE_CACHE_MS, packages }
   return packages
 }
@@ -625,6 +654,15 @@ export function apply(raw: Context): void {
             }
             throw error
           }
+          const role = await installedPackageRole(profileRoot, requestData.name)
+          if (!role.loadable) {
+            json(response, 409, { error: 'installed package has no importable plugin entry' })
+            return
+          }
+          if (role.bundle) {
+            json(response, 409, { error: 'DSH already activates this bundle through the Web profile manifest' })
+            return
+          }
           if ([...ctx.loader.entries()].some(entry => entry.options.name === requestData.name)) {
             json(response, 409, { error: 'plugin is already present in the active configuration' })
             return
@@ -665,7 +703,8 @@ export function apply(raw: Context): void {
           if (name !== null) {
             if (!isMarketPackageName(name)) throw new Error('package is not in the DSH plugin namespace')
             const [metadata, installed] = await Promise.all([npmPackageMetadata(name), installedVersion(profileRoot, name)])
-            json(response, 200, { name, ...metadata, ...(installed === undefined ? {} : { installedVersion: installed }) })
+            if (!metadata.loadable) throw new Error('package has no importable plugin entry')
+            json(response, 200, { name, ...metadata, versions: metadata.loadableVersions, ...(installed === undefined ? {} : { installedVersion: installed }) })
             return
           }
           json(response, 200, { packages: await npmPackages(profileRoot) })
@@ -679,8 +718,9 @@ export function apply(raw: Context): void {
         const requestData = installRequest(await requestBody(request))
         const metadata = await npmPackageMetadata(requestData.name)
         if (!metadata.versions.includes(requestData.version)) throw new Error('selected package version was not found on npm')
+        if (!metadata.loadableVersions.includes(requestData.version)) throw new Error('selected package version has no importable plugin entry')
         await installPackage(requestData)
-        json(response, 200, { ok: true, installedVersion: await installedVersion(profileRoot, requestData.name) })
+        json(response, 200, { ok: true, bundle: metadata.bundle, installedVersion: await installedVersion(profileRoot, requestData.name) })
       } catch (error) {
         json(response, 400, { error: error instanceof Error ? error.message : String(error) })
       }

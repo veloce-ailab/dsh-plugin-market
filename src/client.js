@@ -225,7 +225,7 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
         void readPackage(name).then(detail => {
           setVersions(current => ({ ...current, [name]: detail.versions }))
           setCatalog(current => current.kind === 'ready' && !current.packages.some(item => item.name === name)
-            ? { ...current, packages: [...current.packages, { name, description: detail.description, latest: detail.latest, installedVersion: detail.installedVersion }] }
+            ? { ...current, packages: [...current.packages, { name, description: detail.description, latest: detail.latest, installedVersion: detail.installedVersion, bundle: detail.bundle }] }
             : current)
           setNotice(`${name} 已加入插件列表。`)
         }, error => setNotice(String(error.message || error))).finally(() => setBusy(undefined))
@@ -241,7 +241,7 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
             h('div', null,
               h('div', { className: 'dsh-market-package-name' }, pkg.name),
               pkg.description && h('p', { className: 'dsh-market-package-description' }, pkg.description),
-              h('p', { className: 'dsh-market-package-meta' }, pkg.installedVersion ? `已安装 ${pkg.installedVersion}` : `最新版本 ${pkg.latest || '未知'}`)),
+              h('p', { className: 'dsh-market-package-meta' }, [pkg.installedVersion ? `已安装 ${pkg.installedVersion}` : `最新版本 ${pkg.latest || '未知'}`, pkg.bundle && 'DSH bundle'].filter(Boolean).join(' · '))),
             h('span', { className: 'dsh-market-package-meta' }, '查看详情'))
         })),
         notice && h('p', { className: 'dsh-market-status', role: 'status' }, notice))
@@ -293,8 +293,8 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
             .then(value => {
               const installedVersion = value.installedVersion || version
               updateInstalled(pkg.name, installedVersion)
-              setSelectedPlugin(current => current && current.source === 'npm' ? { ...current, plugin: { ...current.plugin, installedVersion } } : current)
-              setNotice(`${pkg.name}@${installedVersion} 已安装。`)
+              setSelectedPlugin(current => current && current.source === 'npm' ? { ...current, plugin: { ...current.plugin, installedVersion, bundle: value.bundle || current.plugin.bundle } } : current)
+              setNotice(value.bundle ? `${pkg.name}@${installedVersion} 已安装，DSH 会自动激活 bundle。` : `${pkg.name}@${installedVersion} 已安装。`)
             }, error => setNotice(String(error.message || error)))
             .finally(() => setBusy(undefined))
         }
@@ -306,13 +306,13 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
         }
         content = h(React.Fragment, null,
           pkg.description && h('p', { className: 'dsh-market-package-description' }, pkg.description),
-          h('p', { className: 'dsh-market-note' }, pkg.installedVersion ? `已安装 ${pkg.installedVersion}` : '请选择版本后安装。'),
+          h('p', { className: 'dsh-market-note' }, pkg.installedVersion ? (pkg.bundle ? `已安装 ${pkg.installedVersion}；DSH 会通过 profile manifest 自动激活此 bundle。` : `已安装 ${pkg.installedVersion}`) : '请选择版本后安装。'),
           available === null || available === undefined
             ? h('p', { className: 'dsh-market-status' }, '正在从 npm 读取全部版本…')
             : h('label', { className: 'dsh-market-field' }, '版本', h('select', { className: 'dsh-market-select dsh-market-version', value: version, onChange: event => setSelectedVersions(current => ({ ...current, [pkg.name]: event.currentTarget.value })) }, available.map(item => h('option', { key: item, value: item }, item)))),
           h('div', { className: 'dsh-market-actions' },
             h('button', { className: 'dsh-market-button', type: 'button', disabled: !version || installing, onClick: install }, installing ? '安装中…' : '安装'),
-            pkg.installedVersion && h('button', { className: 'dsh-market-button dsh-market-button--primary', type: 'button', disabled: adding, onClick: add }, adding ? '添加中…' : '添加到配置')))
+            pkg.installedVersion && !pkg.bundle && h('button', { className: 'dsh-market-button dsh-market-button--primary', type: 'button', disabled: adding, onClick: add }, adding ? '添加中…' : '添加到配置')))
       } else if (selectedPlugin.source === 'github') {
         const plugin = selectedPlugin.plugin
         const name = `${plugin.owner}/${plugin.repo}`

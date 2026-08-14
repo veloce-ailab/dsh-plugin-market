@@ -9,7 +9,7 @@ pnpm dsh plugin --profile web add D:\dev\dsh\plugins\market
 pnpm dsh web
 ```
 
-Its bundle adds `dsh-plugin-market` automatically. Its `dsh.client` browser half registers **插件配置** as a first-class left-side Settings section, alongside the built-in items. The **添加插件** view queries npm for packages named `dsh-*`, filters the result to that namespace, and allows a user to select an exact published version before running `dsh plugin --profile web add <package>@<version>`. Scoped names in the `@scope/dsh-*` namespace can be looked up by their full package name and use the same install and configuration flow.
+Its bundle adds `dsh-plugin-market` automatically. Its `dsh.client` browser half registers **插件配置** as a first-class left-side Settings section, alongside the built-in items. The **添加插件** view queries npm for packages named `dsh-*`, filters the result to importable packages, and allows a user to select an exact published version before running `dsh plugin --profile web add <package>@<version>`. Scoped names in the `@scope/dsh-*` namespace can be looked up by their full package name and use the same install and configuration flow. A package that declares a DSH bundle is activated by the profile manifest after installation and therefore has no separate Loader-row action.
 
 The **GitHub 精选** view reads the stars, npm mapping, and added-date data published by [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/tree/main/data). Its install action runs `dsh plugin --profile web add github:<owner>/<repo>` for the selected repository. When DSH records a package name for that installation, the page also offers **添加到配置**; bundle packages remain activated by DSH's profile manifest without an extra Loader row.
 
