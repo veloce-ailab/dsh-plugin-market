@@ -509,6 +509,12 @@ async function readPatch(path: string): Promise<string> {
   }
 }
 
+/** Append a YAML list row, replacing the commented empty-template placeholder first. */
+function appendPatchRow(existing: string, row: string): string {
+  const withoutEmptyRoot = existing.replace(/^[\t ]*\[\][\t ]*(?:\r?\n|$)/m, '')
+  return `${withoutEmptyRoot}${withoutEmptyRoot.length === 0 || withoutEmptyRoot.endsWith('\n') ? '' : '\n'}${row}`
+}
+
 /**
  * Add one complete, id-targeted override without parsing or reformatting
  * earlier YAML. JSON is valid YAML, so the appended row is a Cordis patch and
@@ -516,9 +522,7 @@ async function readPatch(path: string): Promise<string> {
  */
 async function appendPatch(path: string, existing: string, request: SaveRequest): Promise<void> {
   const row = `- id: ${JSON.stringify(request.id)}\n  config: ${JSON.stringify(request.config)}\n`
-  const content = existing.trim() === '[]'
-    ? row
-    : `${existing.endsWith('\n') ? existing : `${existing}\n`}${row}`
+  const content = appendPatchRow(existing, row)
   const temporary = `${path}.market.tmp`
   await writeFile(temporary, content, 'utf8')
   await rename(temporary, path)
@@ -527,9 +531,7 @@ async function appendPatch(path: string, existing: string, request: SaveRequest)
 /** Add a new Loader entry while keeping the existing user patch byte-for-byte intact. */
 async function appendPluginPatch(path: string, existing: string, request: AddPluginRequest): Promise<void> {
   const row = `- insert:\n    - id: ${JSON.stringify(`market:${request.name}`)}\n      name: ${JSON.stringify(request.name)}\n`
-  const content = existing.trim() === '[]'
-    ? row
-    : `${existing.endsWith('\n') ? existing : `${existing}\n`}${row}`
+  const content = appendPatchRow(existing, row)
   const temporary = `${path}.market.tmp`
   await writeFile(temporary, content, 'utf8')
   await rename(temporary, path)
