@@ -167,6 +167,7 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
     const [curatedNames, setCuratedNames] = useState({})
     const [installed, setInstalled] = useState({ kind: 'idle' })
     const [selectedPlugin, setSelectedPlugin] = useState()
+    const [configuredNames, setConfiguredNames] = useState({})
     const [busy, setBusy] = useState()
     const refresh = () => {
       setState({ kind: 'loading' })
@@ -195,6 +196,7 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
       h('button', { className: 'dsh-market-button dsh-market-button--tab', type: 'button', role: 'tab', 'aria-selected': mode === 'curated', 'data-active': mode === 'curated' ? 'true' : undefined, onClick: () => { setSelectedPlugin(undefined); setMode('curated') } }, 'GitHub 精选'),
       h('button', { className: 'dsh-market-button dsh-market-button--tab', type: 'button', role: 'tab', 'aria-selected': mode === 'uninstall', 'data-active': mode === 'uninstall' ? 'true' : undefined, onClick: () => { setSelectedPlugin(undefined); setMode('uninstall') } }, '卸载插件'))
     const entries = state.kind === 'ready' ? state.value.entries : []
+    const isConfigured = name => configuredNames[name] === true || entries.some(entry => entry.name === name)
     const entry = useMemo(() => entries.find(item => item.id === selectedId) || entries[0], [entries, selectedId])
     useEffect(() => { if (entry) { setSelectedId(entry.id); setDraft(JSON.parse(JSON.stringify(entry.config || {}))); setNotice(undefined) } }, [entry && entry.id])
     const ensureVersions = pkg => {
@@ -286,6 +288,7 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
         const version = selectedVersions[pkg.name] || pkg.installedVersion || (Array.isArray(available) ? available[0] : undefined)
         const installing = busy === `install:${pkg.name}`
         const adding = busy === `add:${pkg.name}`
+        const configured = isConfigured(pkg.name)
         const install = () => {
           if (!version) return
           setBusy(`install:${pkg.name}`)
@@ -301,7 +304,7 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
         const add = () => {
           setBusy(`add:${pkg.name}`)
           void addPlugin(pkg.name)
-            .then(() => { setNotice(`${pkg.name} 已添加到配置。运行中的 profile 将自动重新加载。`); refresh() }, error => setNotice(String(error.message || error)))
+            .then(() => { setConfiguredNames(current => ({ ...current, [pkg.name]: true })); setNotice(`${pkg.name} 已添加到配置。运行中的 profile 将自动重新加载。`); refresh() }, error => setNotice(String(error.message || error)))
             .finally(() => setBusy(undefined))
         }
         content = h(React.Fragment, null,
@@ -312,13 +315,14 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
             : h('label', { className: 'dsh-market-field' }, '版本', h('select', { className: 'dsh-market-select dsh-market-version', value: version, onChange: event => setSelectedVersions(current => ({ ...current, [pkg.name]: event.currentTarget.value })) }, available.map(item => h('option', { key: item, value: item }, item)))),
           h('div', { className: 'dsh-market-actions' },
             h('button', { className: 'dsh-market-button', type: 'button', disabled: !version || installing, onClick: install }, installing ? '安装中…' : '安装'),
-            pkg.installedVersion && !pkg.bundle && h('button', { className: 'dsh-market-button dsh-market-button--primary', type: 'button', disabled: adding, onClick: add }, adding ? '添加中…' : '添加到配置')))
+            pkg.installedVersion && !pkg.bundle && h('button', { className: 'dsh-market-button dsh-market-button--primary', type: 'button', disabled: adding || configured, onClick: add }, configured ? '已在配置中' : adding ? '添加中…' : '添加到配置')))
       } else if (selectedPlugin.source === 'github') {
         const plugin = selectedPlugin.plugin
         const name = `${plugin.owner}/${plugin.repo}`
         const packageName = curatedNames[name] || plugin.installedName
         const installing = busy === `github:${name}`
         const adding = busy === `github-add:${name}`
+        const configured = packageName && isConfigured(packageName)
         const install = () => {
           setBusy(`github:${name}`)
           void installGitHubPlugin(plugin.owner, plugin.repo)
@@ -334,7 +338,7 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
         const add = () => {
           setBusy(`github-add:${name}`)
           void addPlugin(packageName)
-            .then(() => { setNotice(`${packageName} 已添加到配置。运行中的 profile 将自动重新加载。`); refresh() }, error => setNotice(String(error.message || error)))
+            .then(() => { setConfiguredNames(current => ({ ...current, [packageName]: true })); setNotice(`${packageName} 已添加到配置。运行中的 profile 将自动重新加载。`); refresh() }, error => setNotice(String(error.message || error)))
             .finally(() => setBusy(undefined))
         }
         content = h(React.Fragment, null,
@@ -342,7 +346,7 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
           h('p', { className: 'dsh-market-note' }, '安装会执行 dsh plugin --profile web add github:<owner>/<repo>。'),
           h('div', { className: 'dsh-market-actions' },
             h('button', { className: 'dsh-market-button', type: 'button', disabled: installing, onClick: install }, installing ? '安装中…' : '安装'),
-            packageName && h('button', { className: 'dsh-market-button dsh-market-button--primary', type: 'button', disabled: adding, onClick: add }, adding ? '添加中…' : '添加到配置')))
+            packageName && h('button', { className: 'dsh-market-button dsh-market-button--primary', type: 'button', disabled: adding || configured, onClick: add }, configured ? '已在配置中' : adding ? '添加中…' : '添加到配置')))
       } else {
         const plugin = selectedPlugin.plugin
         const uninstalling = busy === `uninstall:${plugin.name}`

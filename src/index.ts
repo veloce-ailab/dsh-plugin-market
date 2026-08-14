@@ -580,6 +580,12 @@ function appendPatchRow(existing: string, row: string): string {
   return `${withoutEmptyRoot}${withoutEmptyRoot.length === 0 || withoutEmptyRoot.endsWith('\n') ? '' : '\n'}${row}`
 }
 
+/** Detect a package name already written as a Loader row in a user patch. */
+function patchHasPluginRow(existing: string, name: string): boolean {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`(?:^|\\r?\\n)[\\t ]*name:[\\t ]*(?:"${escaped}"|'${escaped}'|${escaped})[\\t ]*(?:#.*)?(?:\\r?\\n|$)`).test(existing)
+}
+
 /**
  * Add one complete, id-targeted override without parsing or reformatting
  * earlier YAML. JSON is valid YAML, so the appended row is a Cordis patch and
@@ -645,6 +651,7 @@ export function apply(raw: Context): void {
         }
         if (request.method === 'POST') {
           const requestData = addPluginRequest(await requestBody(request))
+          const existingPatch = await readPatch(patchPath)
           try {
             await access(join(profileRoot, 'node_modules', requestData.name, 'package.json'))
           } catch (error) {
@@ -667,7 +674,11 @@ export function apply(raw: Context): void {
             json(response, 409, { error: 'plugin is already present in the active configuration' })
             return
           }
-          await appendPluginPatch(patchPath, await readPatch(patchPath), requestData)
+          if (patchHasPluginRow(existingPatch, requestData.name)) {
+            json(response, 409, { error: 'plugin is already present in the user configuration patch' })
+            return
+          }
+          await appendPluginPatch(patchPath, existingPatch, requestData)
           json(response, 200, { ok: true })
           return
         }
