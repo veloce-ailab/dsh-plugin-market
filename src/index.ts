@@ -161,17 +161,17 @@ const BROWSER_UI = `(() => {
   };
   const reload = () => load().catch(error => status(error instanceof Error ? error.message : String(error), true));
   const activate = () => {
-    for (const item of tab.parentElement.querySelectorAll('button')) item.setAttribute('aria-current', item === tab ? 'true' : 'false');
+    for (const item of tab.parentElement.querySelectorAll('button')) { item.setAttribute('aria-current', item === tab ? 'true' : 'false'); item.style.background = item === tab ? 'var(--dsw-specific-sidebar-nav-item-active,#4a4c52)' : 'transparent'; }
     for (const item of options.children) if (item !== panel) item.hidden = true;
     panel.hidden = false; if (!entries.length) void reload();
   };
   const mount = () => {
     const dialog = document.querySelector('[role=dialog]'); if (!dialog) return;
-    const nav = dialog.querySelector('nav'); const list = nav?.querySelector('div:last-child'); const nextOptions = nav?.nextElementSibling?.lastElementChild; if (!list || !nextOptions) return;
+    const nav = dialog.querySelector('nav'); const list = nav === null ? null : [...nav.children].find(candidate => candidate.tagName === 'DIV' && [...candidate.children].some(child => child.tagName === 'BUTTON')); const nextOptions = nav?.nextElementSibling?.lastElementChild; if (!list || !nextOptions) return;
     if (options === nextOptions && panel?.isConnected) return;
     options = nextOptions; tab = document.createElement('button'); tab.type = 'button'; tab.textContent = '插件配置'; tab.style.cssText = 'display:flex;align-items:center;gap:8px;height:40px;padding:9px 16px 9px 12px;border:0;border-radius:12px;background:transparent;color:var(--dsw-alias-label-primary,#18181b);font:14px/22px inherit;text-align:left;cursor:pointer';
     panel = document.createRange().createContextualFragment(template).firstChild; list.appendChild(tab); options.appendChild(panel);
-    tab.addEventListener('click', activate); list.addEventListener('click', event => { if (event.target !== tab && !tab.contains(event.target)) { panel.hidden = true; for (const item of options.children) if (item !== panel) item.hidden = false; } });
+    tab.addEventListener('click', activate); list.addEventListener('click', event => { if (event.target !== tab && !tab.contains(event.target)) { panel.hidden = true; for (const item of list.querySelectorAll('button')) item.style.removeProperty('background'); for (const item of options.children) if (item !== panel) item.hidden = false; } });
     panel.querySelector('select').addEventListener('change', show); panel.querySelector('[data-refresh]').addEventListener('click', reload);
     panel.querySelector('[data-save]').addEventListener('click', async () => { const entry = current(); if (!entry) return; if (!entry.schema?.fields?.length) try { draft = JSON.parse(panel.querySelector('[data-json]').value); } catch { status('配置必须是有效 JSON。', true); return; } status('正在保存…'); try { const response = await fetch(api, {method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({id:entry.id,config:draft})}); const value = await response.json(); if (!response.ok) throw new Error(value.error || '保存失败'); status('已保存。运行中的 profile 将自动重新加载。'); } catch (error) { status(error instanceof Error ? error.message : String(error), true); } });
   };
