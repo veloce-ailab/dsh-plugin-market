@@ -22,6 +22,9 @@ interface LoaderEntry {
     readonly group?: boolean | null
     readonly config?: unknown
   }
+  readonly fiber?: {
+    readonly runtime?: { readonly Config?: unknown } | null
+  }
 }
 
 interface MarketContext extends Context {
@@ -41,6 +44,90 @@ interface SaveRequest {
   config: unknown
 }
 
+/** One schema-derived top-level field understood by the browser form. */
+interface FormField {
+  key: string
+  type: 'string' | 'number' | 'boolean' | 'enum' | 'json'
+  required: boolean
+  description?: string
+  default?: unknown
+  choices?: readonly unknown[]
+}
+
+/** Browser-safe object-config schema. */
+interface FormSchema {
+  fields: readonly FormField[]
+}
+
+/** Narrow an opaque schema implementation to its enumerable metadata. */
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && (typeof value === 'object' || typeof value === 'function')
+    ? value as Record<string, unknown>
+    : undefined
+}
+
+/** Prefer Chinese schema copy, then English, then the first available text. */
+function description(value: unknown): string | undefined {
+  if (typeof value === 'string') return value
+  const localized = record(value)
+  if (localized === undefined) return undefined
+  for (const key of ['zh', 'zh-CN', 'en', '']) {
+    if (typeof localized[key] === 'string') return localized[key] as string
+  }
+  return Object.values(localized).find((item): item is string => typeof item === 'string')
+}
+
+/** Convert one Schemastery/Zod leaf into a generic browser field. */
+function formField(key: string, source: unknown): FormField | undefined {
+  const schema = record(source)
+  if (schema === undefined) return undefined
+  const meta = record(schema.meta)
+  const zod = record(record(schema._zod)?.def) ?? record(schema._def)
+  const rawType = typeof schema.type === 'string' ? schema.type : zod?.type
+  const inner = schema.inner ?? zod?.innerType
+  if (rawType === 'optional' || rawType === 'nullable' || rawType === 'default') {
+    const child = formField(key, inner)
+    if (child === undefined) return undefined
+    return {
+      ...child,
+      required: rawType === 'optional' || rawType === 'nullable' ? false : child.required,
+      ...rawType === 'default' && zod?.defaultValue !== undefined ? { default: zod.defaultValue } : {},
+    }
+  }
+  const required = meta?.required === true
+  const fieldDescription = description(meta?.description ?? schema.description)
+  const fieldDefault = meta?.default
+  const extra = {
+    required,
+    ...(fieldDescription === undefined ? {} : { description: fieldDescription }),
+    ...(fieldDefault === undefined ? {} : { default: fieldDefault }),
+  }
+  if (rawType === 'string' || rawType === 'number' || rawType === 'boolean') return { key, type: rawType, ...extra }
+  const constants = rawType === 'union' && Array.isArray(schema.list)
+    ? schema.list.map(item => record(item)?.value).filter(value => value !== undefined)
+    : rawType === 'enum'
+      ? Object.values(record(zod?.entries) ?? {})
+      : undefined
+  if (constants !== undefined && constants.length > 0) return { key, type: 'enum', choices: constants, ...extra }
+  return { key, type: 'json', ...extra }
+}
+
+/** Project a Schemastery or Zod object schema; other roots use JSON fallback. */
+function formSchema(source: unknown): FormSchema | undefined {
+  const schema = record(source)
+  if (schema === undefined) return undefined
+  const zod = record(record(schema._zod)?.def) ?? record(schema._def)
+  const type = typeof schema.type === 'string' ? schema.type : zod?.type
+  const fields = type === 'object'
+    ? record(schema.dict) ?? record(typeof zod?.shape === 'function' ? zod.shape() : zod?.shape)
+    : undefined
+  if (fields === undefined) return undefined
+  return { fields: Object.entries(fields).flatMap(([key, field]) => {
+    const result = formField(key, field)
+    return result === undefined ? [] : [result]
+  }) }
+}
+
 /** Keep the index injection safe even when its source changes in the future. */
 function scriptTag(source: string): string {
   return `<script id="dsh-plugin-market-ui">${source.replaceAll('<', '\\u003c')}</script>`
@@ -49,11 +136,22 @@ function scriptTag(source: string): string {
 /** Browser implementation with no dependency on the host React application. */
 const BROWSER_UI = `(() => {
   const api = '/plugin-market/config';
-  let entries = [], panel, tab, tablist;
+  let entries = [], draft, panel, tab, options;
   const text = value => JSON.stringify(value ?? null, null, 2);
-  const template = '<section data-dsh-market-panel hidden style="display:flex;flex-direction:column;gap:12px;max-width:760px;color:var(--dsw-alias-label-primary,#18181b);font:13px/1.5 system-ui,sans-serif"><p style="margin:0;color:var(--dsw-alias-label-tertiary,#52525b)">显示当前组合配置。保存只追加用户 patch；即使改回原值，也会保留显式覆盖。</p><label style="display:flex;flex-direction:column;gap:6px">插件<select style="padding:7px;border:1px solid var(--dsw-alias-border-l2,#a1a1aa);border-radius:6px;background:transparent;color:inherit"></select></label><label style="display:flex;flex-direction:column;gap:6px">组合后的配置（只读）<textarea data-effective rows="10" readonly style="padding:8px;border:1px solid var(--dsw-alias-border-l2,#a1a1aa);border-radius:6px;background:transparent;color:inherit;font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;resize:vertical"></textarea></label><label style="display:flex;flex-direction:column;gap:6px">保存为用户覆盖（JSON）<textarea data-draft rows="10" spellcheck="false" style="padding:8px;border:1px solid var(--dsw-alias-border-l2,#a1a1aa);border-radius:6px;background:transparent;color:inherit;font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;resize:vertical"></textarea></label><p style="margin:0;color:var(--dsw-alias-label-tertiary,#52525b)">Cordis 会整体替换 config。编辑一个字段时请保留该插件其余需要的字段。</p><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><button data-save type="button" style="border:0;border-radius:6px;padding:8px 12px;background:#2563eb;color:#fff;cursor:pointer">保存用户覆盖</button><button data-refresh type="button" style="border:1px solid var(--dsw-alias-border-l2,#a1a1aa);border-radius:6px;padding:7px 11px;background:transparent;color:inherit;cursor:pointer">重新读取</button><span data-status></span></div></section>';
+  const template = '<section data-dsh-market-panel hidden style="display:flex;flex-direction:column;gap:12px;max-width:760px;color:var(--dsw-alias-label-primary,#18181b);font:13px/1.5 system-ui,sans-serif"><h2 style="margin:0;font-size:18px">插件配置</h2><p style="margin:0;color:var(--dsw-alias-label-tertiary,#52525b)">按插件导出的 Config schema 生成字段。保存只追加用户 patch；即使改回原值，仍保留显式覆盖。</p><label style="display:flex;flex-direction:column;gap:6px">插件<select style="padding:7px;border:1px solid var(--dsw-alias-border-l2,#a1a1aa);border-radius:6px;background:transparent;color:inherit"></select></label><div data-fields style="display:flex;flex-direction:column;gap:10px"></div><label data-json-field style="display:none;flex-direction:column;gap:6px">配置（JSON）<textarea data-json rows="12" spellcheck="false" style="padding:8px;border:1px solid var(--dsw-alias-border-l2,#a1a1aa);border-radius:6px;background:transparent;color:inherit;font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;resize:vertical"></textarea></label><p style="margin:0;color:var(--dsw-alias-label-tertiary,#52525b)">Cordis 会整体替换 config；表单值以当前组合配置为初始值。</p><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><button data-save type="button" style="border:0;border-radius:6px;padding:8px 12px;background:#2563eb;color:#fff;cursor:pointer">保存用户覆盖</button><button data-refresh type="button" style="border:1px solid var(--dsw-alias-border-l2,#a1a1aa);border-radius:6px;padding:7px 11px;background:transparent;color:inherit;cursor:pointer">重新读取</button><span data-status></span></div></section>';
   const current = () => entries.find(entry => entry.id === panel.querySelector('select').value);
-  const show = () => { const entry = current(); if (!entry) return; panel.querySelector('[data-effective]').value = text(entry.config); panel.querySelector('[data-draft]').value = text(entry.config); };
+  const clone = value => JSON.parse(JSON.stringify(value ?? {}));
+  const input = (field, value) => {
+    const label = document.createElement('label'); label.style.cssText = 'display:flex;flex-direction:column;gap:5px';
+    const title = document.createElement('span'); title.textContent = field.key + (field.required ? ' *' : '') + (field.description ? ' — ' + field.description : ''); label.appendChild(title);
+    let control;
+    if (field.type === 'boolean') { control = document.createElement('input'); control.type = 'checkbox'; control.checked = Boolean(value); control.addEventListener('change', () => { draft[field.key] = control.checked; }); }
+    else if (field.type === 'enum') { control = document.createElement('select'); for (const choice of field.choices) { const option = document.createElement('option'); option.value = JSON.stringify(choice); option.textContent = String(choice); option.selected = JSON.stringify(choice) === JSON.stringify(value); control.appendChild(option); } control.addEventListener('change', () => { draft[field.key] = JSON.parse(control.value); }); }
+    else if (field.type === 'json') { control = document.createElement('textarea'); control.rows = 5; control.value = text(value); control.addEventListener('change', () => { try { draft[field.key] = JSON.parse(control.value); control.setCustomValidity(''); } catch { control.setCustomValidity('必须是有效 JSON。'); } }); }
+    else { control = document.createElement('input'); control.type = field.type === 'number' ? 'number' : 'text'; control.value = value ?? field.default ?? ''; control.addEventListener('change', () => { draft[field.key] = field.type === 'number' ? Number(control.value) : control.value; }); }
+    control.style.cssText = 'padding:7px;border:1px solid var(--dsw-alias-border-l2,#a1a1aa);border-radius:6px;background:transparent;color:inherit;font:inherit'; label.appendChild(control); return label;
+  };
+  const show = () => { const entry = current(); if (!entry) return; draft = clone(entry.config); const fields = panel.querySelector('[data-fields]'), jsonField = panel.querySelector('[data-json-field]'), json = panel.querySelector('[data-json]'); fields.replaceChildren(); if (!entry.schema?.fields?.length) { jsonField.style.display = 'flex'; json.value = text(draft); return; } jsonField.style.display = 'none'; for (const field of entry.schema.fields) fields.appendChild(input(field, draft[field.key])); };
   const status = (message, failed = false) => { const output = panel.querySelector('[data-status]'); output.textContent = message; output.style.color = failed ? '#b91c1c' : ''; };
   const load = async () => {
     status('正在读取…'); const response = await fetch(api, {cache:'no-store'}); const value = await response.json();
@@ -63,20 +161,19 @@ const BROWSER_UI = `(() => {
   };
   const reload = () => load().catch(error => status(error instanceof Error ? error.message : String(error), true));
   const activate = () => {
-    for (const item of tablist.querySelectorAll('[role=tab]')) item.setAttribute('aria-selected', item === tab ? 'true' : 'false');
-    for (const item of tablist.parentElement.querySelectorAll('[role=tabpanel]')) item.hidden = true;
+    for (const item of tab.parentElement.querySelectorAll('button')) item.setAttribute('aria-current', item === tab ? 'true' : 'false');
+    for (const item of options.children) if (item !== panel) item.hidden = true;
     panel.hidden = false; if (!entries.length) void reload();
   };
   const mount = () => {
     const dialog = document.querySelector('[role=dialog]'); if (!dialog) return;
-    const plugins = [...dialog.querySelectorAll('button')].find(button => /^(插件|Plugins)$/.test(button.textContent.trim())); if (!plugins) return;
-    const nextTablist = dialog.querySelector('[role=tablist]'); if (!nextTablist) return;
-    if (tablist === nextTablist && panel?.isConnected) return;
-    tablist = nextTablist; tab = document.createElement('button'); tab.type = 'button'; tab.setAttribute('role', 'tab'); tab.setAttribute('aria-selected', 'false'); tab.textContent = '配置编辑'; tab.style.cssText = 'position:relative;border:0;padding:7px 1px 9px;background:transparent;color:var(--dsw-alias-label-tertiary,#52525b);font:inherit;font-size:13px;line-height:20px;cursor:pointer';
-    panel = document.createRange().createContextualFragment(template).firstChild; tablist.appendChild(tab); tablist.parentElement.appendChild(panel);
-    tab.addEventListener('click', activate); tablist.addEventListener('click', event => { if (!event.target.closest('[data-dsh-market-tab]') && event.target !== tab) panel.hidden = true; });
+    const nav = dialog.querySelector('nav'); const list = nav?.querySelector('div:last-child'); const nextOptions = nav?.nextElementSibling?.lastElementChild; if (!list || !nextOptions) return;
+    if (options === nextOptions && panel?.isConnected) return;
+    options = nextOptions; tab = document.createElement('button'); tab.type = 'button'; tab.textContent = '插件配置'; tab.style.cssText = 'display:flex;align-items:center;gap:8px;height:40px;padding:9px 16px 9px 12px;border:0;border-radius:12px;background:transparent;color:var(--dsw-alias-label-primary,#18181b);font:14px/22px inherit;text-align:left;cursor:pointer';
+    panel = document.createRange().createContextualFragment(template).firstChild; list.appendChild(tab); options.appendChild(panel);
+    tab.addEventListener('click', activate); list.addEventListener('click', event => { if (event.target !== tab && !tab.contains(event.target)) { panel.hidden = true; for (const item of options.children) if (item !== panel) item.hidden = false; } });
     panel.querySelector('select').addEventListener('change', show); panel.querySelector('[data-refresh]').addEventListener('click', reload);
-    panel.querySelector('[data-save]').addEventListener('click', async () => { const entry = current(); if (!entry) return; let config; try { config = JSON.parse(panel.querySelector('[data-draft]').value); } catch { status('配置必须是有效 JSON。', true); return; } status('正在保存…'); try { const response = await fetch(api, {method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({id:entry.id,config})}); const value = await response.json(); if (!response.ok) throw new Error(value.error || '保存失败'); status('已保存。运行中的 profile 将自动重新加载。'); } catch (error) { status(error instanceof Error ? error.message : String(error), true); } });
+    panel.querySelector('[data-save]').addEventListener('click', async () => { const entry = current(); if (!entry) return; if (!entry.schema?.fields?.length) try { draft = JSON.parse(panel.querySelector('[data-json]').value); } catch { status('配置必须是有效 JSON。', true); return; } status('正在保存…'); try { const response = await fetch(api, {method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({id:entry.id,config:draft})}); const value = await response.json(); if (!response.ok) throw new Error(value.error || '保存失败'); status('已保存。运行中的 profile 将自动重新加载。'); } catch (error) { status(error instanceof Error ? error.message : String(error), true); } });
   };
   new MutationObserver(mount).observe(document.body, {childList:true,subtree:true}); mount();
 })();`
@@ -167,7 +264,15 @@ export function apply(raw: Context): void {
         if (request.method === 'GET') {
           const entries = [...ctx.loader.entries()]
             .filter(entry => !entry.options.group)
-            .map(entry => ({ id: entry.id, name: entry.options.name, config: entry.options.config ?? null }))
+            .map(entry => {
+              const schema = formSchema(entry.fiber?.runtime?.Config)
+              return {
+                id: entry.id,
+                name: entry.options.name,
+                config: entry.options.config ?? null,
+                ...(schema === undefined ? {} : { schema }),
+              }
+            })
           json(response, 200, { entries })
           return
         }
