@@ -19,13 +19,15 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
     textarea.dsh-market-control{min-height:unset;resize:vertical;font-family:var(--ds-font-family-code);font-size:12px;line-height:18px}
     .dsh-market-control:focus-visible{border-color:var(--dsw-alias-state-business-primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--dsw-alias-state-business-primary) 18%,transparent)}
     .dsh-market-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-    .dsh-market-tabs{display:flex;gap:6px;border-bottom:1px solid var(--dsw-alias-border-l2);padding-bottom:10px}
+    .dsh-market-tabs{display:flex;align-items:flex-end;gap:22px;margin-top:2px;border-bottom:1px solid var(--dsw-alias-border-l2)}
     .dsh-market-button{min-height:34px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;padding:5px 10px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;cursor:pointer}
     .dsh-market-button:hover{background:var(--dsw-alias-interactive-bg-hover)}
     .dsh-market-button--primary{border-color:var(--dsw-alias-state-business-primary);background:var(--dsw-alias-state-business-primary);color:#fff}
     .dsh-market-button--primary:hover{filter:brightness(1.05)}
-    .dsh-market-button--tab{border-color:transparent}
-    .dsh-market-button--tab[aria-current=true]{background:var(--dsw-alias-interactive-bg-hover);font-weight:600}
+    .dsh-market-button--tab{position:relative;min-height:unset;border:0;border-radius:0;padding:7px 1px 9px;background:transparent;color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:20px}
+    .dsh-market-button--tab:hover,.dsh-market-button--tab[data-active=true]{background:transparent;color:var(--dsw-alias-label-primary)}
+    .dsh-market-button--tab[data-active=true]::after,.dsh-market-button--tab:focus-visible::after{position:absolute;right:0;bottom:-1px;left:0;height:2px;border-radius:2px 2px 0 0;background:var(--dsw-alias-label-primary);content:''}
+    .dsh-market-button--tab:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:2px;border-radius:2px;color:var(--dsw-alias-label-primary)}
     .dsh-market-error{color:var(--dsw-alias-state-error-primary)}
     .dsh-market-catalog{display:flex;flex-direction:column;gap:12px}
     .dsh-market-package{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1)}
@@ -33,6 +35,9 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
     .dsh-market-package-description{margin:4px 0 0;font-size:13px;line-height:20px;color:var(--dsw-alias-label-tertiary)}
     .dsh-market-package-meta{margin:6px 0 0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}
     .dsh-market-package-actions{display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+    .dsh-market-select{box-sizing:border-box;height:32px;max-width:240px;padding:0 32px 0 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;appearance:none;background-color:var(--dsw-alias-bg-layer-1);background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%2381858C' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;background-size:12px 12px;color:var(--dsw-alias-label-primary);font:inherit;font-size:14px;line-height:22px;cursor:pointer}
+    .dsh-market-select:focus{outline:none;border-color:var(--dsw-alias-brand-primary)}
+    .dsh-market-select:disabled{opacity:.6;cursor:default}
     .dsh-market-version{min-width:108px;width:auto}
     .dsh-market-package--selectable{width:100%;border:0;text-align:left;color:inherit;font:inherit;cursor:pointer}
     .dsh-market-package--selectable:hover{background:var(--dsw-alias-interactive-bg-hover)}
@@ -135,7 +140,7 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
     if (field.type === 'boolean') return h('label', { key: field.key, className: 'dsh-market-field dsh-market-field--boolean' },
       h('input', { type: 'checkbox', checked: Boolean(value), onChange: event => update(field.key, event.currentTarget.checked) }), label)
     if (field.type === 'enum') return h('label', { key: field.key, className: 'dsh-market-field' }, label,
-      h('select', { className: 'dsh-market-control', value: JSON.stringify(value), onChange: event => update(field.key, JSON.parse(event.currentTarget.value)) },
+      h('select', { className: 'dsh-market-select', value: JSON.stringify(value), onChange: event => update(field.key, JSON.parse(event.currentTarget.value)) },
         field.choices.map(choice => h('option', { key: JSON.stringify(choice), value: JSON.stringify(choice) }, String(choice)))))
     if (field.type === 'json') return h('label', { key: field.key, className: 'dsh-market-field' }, label,
       h('textarea', { className: 'dsh-market-control', defaultValue: JSON.stringify(value, null, 2), rows: 5, onChange: event => {
@@ -184,11 +189,11 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
       void readInstalledPlugins().then(plugins => setInstalled({ kind: 'ready', plugins }), error => setInstalled({ kind: 'error', error: String(error.message || error) }))
     }, [mode, installed.kind])
     const page = content => h(React.Fragment, null, h('style', null, styles), content)
-    const tabs = h('div', { className: 'dsh-market-tabs' },
-      h('button', { className: 'dsh-market-button dsh-market-button--tab', type: 'button', 'aria-current': mode === 'config' ? 'true' : undefined, onClick: () => { setSelectedPlugin(undefined); setMode('config') } }, '已配置插件'),
-      h('button', { className: 'dsh-market-button dsh-market-button--tab', type: 'button', 'aria-current': mode === 'market' ? 'true' : undefined, onClick: () => { setSelectedPlugin(undefined); setMode('market') } }, '添加 npm 插件'),
-      h('button', { className: 'dsh-market-button dsh-market-button--tab', type: 'button', 'aria-current': mode === 'curated' ? 'true' : undefined, onClick: () => { setSelectedPlugin(undefined); setMode('curated') } }, 'GitHub 精选'),
-      h('button', { className: 'dsh-market-button dsh-market-button--tab', type: 'button', 'aria-current': mode === 'uninstall' ? 'true' : undefined, onClick: () => { setSelectedPlugin(undefined); setMode('uninstall') } }, '卸载插件'))
+    const tabs = h('div', { className: 'dsh-market-tabs', role: 'tablist', 'aria-label': '插件市场' },
+      h('button', { className: 'dsh-market-button dsh-market-button--tab', type: 'button', role: 'tab', 'aria-selected': mode === 'config', 'data-active': mode === 'config' ? 'true' : undefined, onClick: () => { setSelectedPlugin(undefined); setMode('config') } }, '已配置插件'),
+      h('button', { className: 'dsh-market-button dsh-market-button--tab', type: 'button', role: 'tab', 'aria-selected': mode === 'market', 'data-active': mode === 'market' ? 'true' : undefined, onClick: () => { setSelectedPlugin(undefined); setMode('market') } }, '添加 npm 插件'),
+      h('button', { className: 'dsh-market-button dsh-market-button--tab', type: 'button', role: 'tab', 'aria-selected': mode === 'curated', 'data-active': mode === 'curated' ? 'true' : undefined, onClick: () => { setSelectedPlugin(undefined); setMode('curated') } }, 'GitHub 精选'),
+      h('button', { className: 'dsh-market-button dsh-market-button--tab', type: 'button', role: 'tab', 'aria-selected': mode === 'uninstall', 'data-active': mode === 'uninstall' ? 'true' : undefined, onClick: () => { setSelectedPlugin(undefined); setMode('uninstall') } }, '卸载插件'))
     const entries = state.kind === 'ready' ? state.value.entries : []
     const entry = useMemo(() => entries.find(item => item.id === selectedId) || entries[0], [entries, selectedId])
     useEffect(() => { if (entry) { setSelectedId(entry.id); setDraft(JSON.parse(JSON.stringify(entry.config || {}))); setNotice(undefined) } }, [entry && entry.id])
@@ -304,7 +309,7 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
           h('p', { className: 'dsh-market-note' }, pkg.installedVersion ? `已安装 ${pkg.installedVersion}` : '请选择版本后安装。'),
           available === null || available === undefined
             ? h('p', { className: 'dsh-market-status' }, '正在从 npm 读取全部版本…')
-            : h('label', { className: 'dsh-market-field' }, '版本', h('select', { className: 'dsh-market-control', value: version, onChange: event => setSelectedVersions(current => ({ ...current, [pkg.name]: event.currentTarget.value })) }, available.map(item => h('option', { key: item, value: item }, item)))),
+            : h('label', { className: 'dsh-market-field' }, '版本', h('select', { className: 'dsh-market-select dsh-market-version', value: version, onChange: event => setSelectedVersions(current => ({ ...current, [pkg.name]: event.currentTarget.value })) }, available.map(item => h('option', { key: item, value: item }, item)))),
           h('div', { className: 'dsh-market-actions' },
             h('button', { className: 'dsh-market-button', type: 'button', disabled: !version || installing, onClick: install }, installing ? '安装中…' : '安装'),
             pkg.installedVersion && h('button', { className: 'dsh-market-button dsh-market-button--primary', type: 'button', disabled: adding, onClick: add }, adding ? '添加中…' : '添加到配置')))
@@ -379,7 +384,7 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
       h('h2', { className: 'dsh-market-heading' }, '插件配置'),
       tabs,
       h('p', { className: 'dsh-market-intro' }, '按插件 Config schema 生成字段。保存只追加用户 patch，即使改回原值也会保留显式覆盖。'),
-      h('label', { className: 'dsh-market-field' }, '插件', h('select', { className: 'dsh-market-control', value: entry.id, onChange: event => setSelectedId(event.currentTarget.value) },
+      h('label', { className: 'dsh-market-field' }, '插件', h('select', { className: 'dsh-market-select', value: entry.id, onChange: event => setSelectedId(event.currentTarget.value) },
         entries.map(item => h('option', { key: item.id, value: item.id }, `${item.name} (${item.id})`)))),
       fields && fields.length
         ? h('div', { className: 'dsh-market-form' }, fields.map(field => input(field, draft[field.key], update)))
