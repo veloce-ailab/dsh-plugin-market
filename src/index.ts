@@ -17,6 +17,7 @@ import type { Context } from '@deepseek-ai/cordis'
 const API_PATH = '/plugin-market/config'
 const PACKAGE_API_PATH = '/plugin-market/packages'
 const CURATED_API_PATH = '/plugin-market/curated'
+const INSTALLED_API_PATH = '/plugin-market/installed'
 const CLIENT_PATH = '/plugin-market/client.js'
 const MAX_REQUEST_BYTES = 1024 * 1024
 const NPM_REPLICATION_URL = 'https://replicate.npmjs.com'
@@ -68,6 +69,10 @@ interface GitHubInstallRequest {
   repo: string
 }
 
+interface UninstallRequest {
+  name: string
+}
+
 interface MarketPackage {
   name: string
   description?: string
@@ -87,6 +92,13 @@ interface CuratedPlugin {
   stars?: number
   addedAt?: string
   installedName?: string
+}
+
+interface InstalledPlugin {
+  name: string
+  version?: string
+  source?: string
+  bundle: boolean
 }
 
 let packageCache: { expiresAt: number, packages: readonly MarketPackage[] } | undefined
@@ -305,23 +317,40 @@ async function installedVersion(root: string, name: string): Promise<string | un
   }
 }
 
-/** Read direct Web-profile dependencies that were installed from GitHub. */
-async function installedGitHubPackages(root: string): Promise<ReadonlyMap<string, string>> {
+/** Read direct dependencies declared by the Web profile. */
+async function profileDependencies(root: string): Promise<ReadonlyMap<string, string>> {
   try {
     const profile = record(JSON.parse(await readFile(join(root, 'package.json'), 'utf8')))
     const dependencies = [profile?.dependencies, profile?.devDependencies, profile?.optionalDependencies]
       .flatMap(value => Object.entries(record(value) ?? {}))
-    const installed = new Map<string, string>()
-    for (const [name, specifier] of dependencies) {
-      if (!isPackageName(name) || typeof specifier !== 'string' || !specifier.startsWith('github:')) continue
-      const repository = githubRepository(`https://github.com/${specifier.slice('github:'.length).split('#', 1)[0]}`)
-      if (repository !== undefined) installed.set(`${repository.owner}/${repository.repo}`, name)
-    }
-    return installed
+    return new Map(dependencies.flatMap(([name, specifier]) => isPackageName(name) && typeof specifier === 'string' ? [[name, specifier] as const] : []))
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return new Map()
     throw error
   }
+}
+
+/** Read direct Web-profile dependencies that were installed from GitHub. */
+async function installedGitHubPackages(root: string): Promise<ReadonlyMap<string, string>> {
+  const installed = new Map<string, string>()
+  for (const [name, specifier] of await profileDependencies(root)) {
+    if (!specifier.startsWith('github:')) continue
+    const repository = githubRepository(`https://github.com/${specifier.slice('github:'.length).split('#', 1)[0]}`)
+    if (repository !== undefined) installed.set(`${repository.owner}/${repository.repo}`, name)
+  }
+  return installed
+}
+
+/** List direct profile dependencies that are DSH-namespaced packages or bundles. */
+async function installedPlugins(root: string): Promise<readonly InstalledPlugin[]> {
+  const dependencies = await profileDependencies(root)
+  const entries = await Promise.all([...dependencies].map(async ([name, source]) => {
+    const version = await installedVersion(root, name)
+    const metadata = version === undefined ? undefined : record(JSON.parse(await readFile(join(root, 'node_modules', name, 'package.json'), 'utf8')))
+    const bundle = record(metadata?.dsh)?.bundle !== undefined
+    return { name, ...(version === undefined ? {} : { version }), source, bundle }
+  }))
+  return entries.filter(entry => isMarketPackageName(entry.name) || entry.bundle)
 }
 
 /** Find the package name recorded by dsh after a curated GitHub installation. */
@@ -347,31 +376,31 @@ async function npmPackages(root: string): Promise<readonly MarketPackage[]> {
   return packages
 }
 
-/** Delegate installation to DSH so its Web profile manifest stays authoritative. */
-async function installDshPlugin(specifier: string): Promise<void> {
+/** Delegate a profile dependency change to DSH so its manifest stays authoritative. */
+async function runDshPluginCommand(command: 'add' | 'remove', specifier: string): Promise<void> {
   const executable = process.platform === 'win32' ? process.env.ComSpec ?? 'cmd.exe' : 'dsh'
   const childArgs = process.platform === 'win32'
-    ? ['/d', '/s', '/c', `dsh.cmd plugin --profile web add ${specifier}`]
-    : ['plugin', '--profile', 'web', 'add', specifier]
+    ? ['/d', '/s', '/c', `dsh.cmd plugin --profile web ${command} ${specifier}`]
+    : ['plugin', '--profile', 'web', command, specifier]
   await new Promise<void>((resolve, reject) => {
     const child = spawn(executable, childArgs, {
       stdio: 'ignore',
       windowsHide: true,
     })
     child.once('error', error => reject(new Error(`failed to start dsh: ${error.message}`)))
-    child.once('exit', code => code === 0 ? resolve() : reject(new Error(`dsh failed while installing ${specifier}`)))
+    child.once('exit', code => code === 0 ? resolve() : reject(new Error(`dsh failed while running ${command} for ${specifier}`)))
   })
   packageCache = undefined
 }
 
 /** Install one exact npm package version into the Web profile. */
 async function installPackage(request: InstallRequest): Promise<void> {
-  await installDshPlugin(`${request.name}@${request.version}`)
+  await runDshPluginCommand('add', `${request.name}@${request.version}`)
 }
 
 /** Install one curated GitHub repository into the Web profile. */
 async function installGitHubPlugin(request: GitHubInstallRequest): Promise<void> {
-  await installDshPlugin(`github:${request.owner}/${request.repo}`)
+  await runDshPluginCommand('add', `github:${request.owner}/${request.repo}`)
 }
 
 /** Add the market browser half to the Web kernel's authoritative boot graph. */
@@ -490,6 +519,13 @@ function gitHubInstallRequest(value: unknown): GitHubInstallRequest {
     throw new Error('request must identify one GitHub owner and repository')
   }
   return { owner, repo }
+}
+
+/** Narrow an uninstall request to one npm package name. */
+function uninstallRequest(value: unknown): UninstallRequest {
+  const source = record(value)
+  if (source === undefined || !isPackageName(source.name as string)) throw new Error('request.name must be an installed npm package')
+  return { name: source.name as string }
 }
 
 /** Narrow an add-to-configuration request to an allowed installed package. */
@@ -676,6 +712,36 @@ export function apply(raw: Context): void {
       }
     },
   }), 'market: curated GitHub route')
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: INSTALLED_API_PATH,
+    handler: async (request, response) => {
+      try {
+        if (!isLoopback(request)) {
+          json(response, 403, { error: 'plugin management is available only from loopback' })
+          return
+        }
+        if (request.method === 'GET') {
+          json(response, 200, { plugins: await installedPlugins(profileRoot) })
+          return
+        }
+        if (request.method !== 'DELETE') {
+          response.writeHead(405, { allow: 'GET, DELETE' })
+          response.end()
+          return
+        }
+        const requestData = uninstallRequest(await requestBody(request))
+        if (!(await profileDependencies(profileRoot)).has(requestData.name)) {
+          json(response, 404, { error: 'plugin is not a direct Web profile dependency' })
+          return
+        }
+        await runDshPluginCommand('remove', requestData.name)
+        json(response, 200, { ok: true })
+      } catch (error) {
+        json(response, 400, { error: error instanceof Error ? error.message : String(error) })
+      }
+    },
+  }), 'market: installed plugin route')
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
     path: CLIENT_PATH,
