@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "target": "esnext",
+    "module": "nodenext",
+    "baseUrl": "../../",
+    "ignoreDeprecations": "6.0",
+    "moduleResolution": "nodenext",
+    "rootDir": "src",
+    "outDir": "lib",
+    "composite": false
+  },
+  "include": ["src"],
+  "exclude": ["node_modules", "dist", "lib"]
+}

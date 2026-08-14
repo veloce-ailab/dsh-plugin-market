@@ -1,0 +1,30 @@
+{
+  "name": "dsh-plugin-market",
+  "version": "1.0.0",
+  "description": "Plugin market for DeepSeek Harness",
+  "homepage": "https://github.com/veloce-ailab/dsh-plugin-market#readme",
+  "bugs": {
+    "url": "https://github.com/veloce-ailab/dsh-plugin-market/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/veloce-ailab/dsh-plugin-market.git"
+  },
+  "license": "MIT",
+  "author": "",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "workspace:^",
+    "@deepseek-ai/schemastery": "link:..\\..\\vendor\\schemastery",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.10"
+  }
+}
