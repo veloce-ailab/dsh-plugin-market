@@ -1,9 +1,9 @@
 /**
- * Standalone Web configuration editor for the active DSH profile.
+ * Settings-native npm plugin market and configuration editor for DSH.
  *
- * It deliberately owns no marketplace behavior yet. The browser panel reads
- * the live Loader entries and appends explicit user overrides to the profile
- * patch without changing any existing line in that file.
+ * The browser panel reads live Loader entries, installs selected npm plugins
+ * into the shared profile module directory, and appends only explicit user
+ * overrides or new Loader rows to the profile patch.
  */
 import type { Context } from '@deepseek-ai/cordis';
 /** Name exposed to Cordis. */

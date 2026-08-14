@@ -1,20 +1,27 @@
 /**
- * Standalone Web configuration editor for the active DSH profile.
+ * Settings-native npm plugin market and configuration editor for DSH.
  *
- * It deliberately owns no marketplace behavior yet. The browser panel reads
- * the live Loader entries and appends explicit user overrides to the profile
- * patch without changing any existing line in that file.
+ * The browser panel reads live Loader entries, installs selected npm plugins
+ * into the shared profile module directory, and appends only explicit user
+ * overrides or new Loader rows to the profile patch.
  */
 
-import { readFile, rename, writeFile } from 'node:fs/promises'
+import { access, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { spawn } from 'node:child_process'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 
 const API_PATH = '/plugin-market/config'
+const PACKAGE_API_PATH = '/plugin-market/packages'
 const CLIENT_PATH = '/plugin-market/client.js'
 const MAX_REQUEST_BYTES = 1024 * 1024
+const NPM_REPLICATION_URL = 'https://replicate.npmjs.com'
+const NPM_REGISTRY_URL = 'https://registry.npmjs.org'
+const PACKAGE_PAGE_SIZE = 200
+const PACKAGE_CACHE_MS = 5 * 60 * 1000
 
 interface LoaderEntry {
   readonly id: string
@@ -44,6 +51,29 @@ interface SaveRequest {
   id: string
   config: unknown
 }
+
+interface AddPluginRequest {
+  name: string
+}
+
+interface InstallRequest {
+  name: string
+  version: string
+}
+
+interface MarketPackage {
+  name: string
+  description?: string
+  latest?: string
+  installedVersion?: string
+}
+
+interface PackageMetadata {
+  versions: readonly string[]
+  latest?: string
+}
+
+let packageCache: { expiresAt: number, packages: readonly MarketPackage[] } | undefined
 
 /** One schema-derived top-level field understood by the browser form. */
 interface FormField {
@@ -127,6 +157,106 @@ function formSchema(source: unknown): FormSchema | undefined {
     const result = formField(key, field)
     return result === undefined ? [] : [result]
   }) }
+}
+
+/** Only packages in the DSH plugin namespace are exposed or installed. */
+function isMarketPackageName(value: string): boolean {
+  return /^(?:dsh-plugin(?:[-._a-z0-9]*)|@[a-z0-9][a-z0-9._-]*\/dsh-plugin(?:[-._a-z0-9]*))$/.test(value)
+}
+
+/** Read a JSON resource with an error that is safe to show in the local UI. */
+async function npmJson(url: string): Promise<unknown> {
+  const response = await fetch(url, { headers: { accept: 'application/json' } })
+  if (!response.ok) throw new Error(`npm registry request failed (${response.status})`)
+  return response.json()
+}
+
+/** List every unscoped package whose npm name starts with dsh-plugin. */
+async function npmPluginNames(): Promise<readonly string[]> {
+  const names: string[] = []
+  let start = 'dsh-plugin'
+  for (;;) {
+    const query = new URLSearchParams({
+      startkey: JSON.stringify(start),
+      endkey: JSON.stringify('dsh-plugin\ufff0'),
+      limit: String(PACKAGE_PAGE_SIZE),
+    })
+    const value = record(await npmJson(`${NPM_REPLICATION_URL}/_all_docs?${query}`))
+    const rows = Array.isArray(value?.rows) ? value.rows : []
+    const page = rows.flatMap(row => {
+      const id = record(row)?.id
+      return typeof id === 'string' && isMarketPackageName(id) ? [id] : []
+    })
+    names.push(...page)
+    if (rows.length < PACKAGE_PAGE_SIZE) return names
+    const last = record(rows.at(-1))?.id
+    if (typeof last !== 'string' || last <= start) return names
+    start = `${last}\u0000`
+  }
+}
+
+/** Read the available versions and summary fields for a single npm package. */
+async function npmPackageMetadata(name: string): Promise<PackageMetadata & { description?: string }> {
+  const value = record(await npmJson(`${NPM_REGISTRY_URL}/${encodeURIComponent(name)}`))
+  const versions = Object.keys(record(value?.versions) ?? {}).filter(version => /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version))
+  const tags = record(value?.['dist-tags'])
+  const latest = typeof tags?.latest === 'string' ? tags.latest : undefined
+  return {
+    versions: latest !== undefined && versions.includes(latest)
+      ? [latest, ...versions.filter(version => version !== latest).sort((left, right) => right.localeCompare(left, undefined, { numeric: true }))]
+      : versions.sort((left, right) => right.localeCompare(left, undefined, { numeric: true })),
+    ...(latest === undefined ? {} : { latest }),
+    ...(typeof value?.description === 'string' ? { description: value.description } : {}),
+  }
+}
+
+/** Return the shared node_modules root that DSH profile resolution reaches. */
+function profilesRoot(): string {
+  return join(process.env.USERPROFILE ?? homedir(), '.dsh', 'profiles')
+}
+
+/** Return the installed version when the shared profile dependency exists. */
+async function installedVersion(root: string, name: string): Promise<string | undefined> {
+  try {
+    const metadata = record(JSON.parse(await readFile(join(root, 'node_modules', name, 'package.json'), 'utf8')))
+    return typeof metadata?.version === 'string' ? metadata.version : undefined
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    throw error
+  }
+}
+
+/** Read and cache the npm directory, enriching it with local install state. */
+async function npmPackages(root: string): Promise<readonly MarketPackage[]> {
+  if (packageCache !== undefined && packageCache.expiresAt > Date.now()) return packageCache.packages
+  const names = await npmPluginNames()
+  const results = await Promise.allSettled(names.map(async name => {
+    const [metadata, installed] = await Promise.all([npmPackageMetadata(name), installedVersion(root, name)])
+    return {
+      name,
+      ...(metadata.description === undefined ? {} : { description: metadata.description }),
+      ...(metadata.latest === undefined ? {} : { latest: metadata.latest }),
+      ...(installed === undefined ? {} : { installedVersion: installed }),
+    }
+  }))
+  const packages = results.flatMap(result => result.status === 'fulfilled' ? [result.value] : [])
+  packageCache = { expiresAt: Date.now() + PACKAGE_CACHE_MS, packages }
+  return packages
+}
+
+/** Run pnpm without shell interpolation so a selected package cannot execute a shell command. */
+async function installPackage(root: string, request: InstallRequest): Promise<void> {
+  await mkdir(root, { recursive: true })
+  const executable = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(executable, ['add', '--dir', root, `${request.name}@${request.version}`], {
+      stdio: 'ignore',
+      windowsHide: true,
+    })
+    child.once('error', error => reject(new Error(`failed to start pnpm: ${error.message}`)))
+    child.once('exit', code => code === 0 ? resolve() : reject(new Error(`pnpm failed while installing ${request.name}@${request.version}`)))
+  })
+  packageCache = undefined
 }
 
 /** Add the market browser half to the Web kernel's authoritative boot graph. */
@@ -226,6 +356,23 @@ function saveRequest(value: unknown): SaveRequest {
   return { id: record.id, config: record.config }
 }
 
+/** Narrow an installation request to one exact allowed package version. */
+function installRequest(value: unknown): InstallRequest {
+  const source = record(value)
+  if (source === undefined || !isMarketPackageName(source.name as string)) throw new Error('request.name must be a DSH plugin package')
+  if (typeof source.version !== 'string' || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(source.version)) {
+    throw new Error('request.version must be an exact published version')
+  }
+  return { name: source.name as string, version: source.version }
+}
+
+/** Narrow an add-to-configuration request to an allowed installed package. */
+function addPluginRequest(value: unknown): AddPluginRequest {
+  const source = record(value)
+  if (source === undefined || !isMarketPackageName(source.name as string)) throw new Error('request.name must be a DSH plugin package')
+  return { name: source.name as string }
+}
+
 /** Read a profile patch without treating a new profile as an error. */
 async function readPatch(path: string): Promise<string> {
   try {
@@ -251,6 +398,17 @@ async function appendPatch(path: string, existing: string, request: SaveRequest)
   await rename(temporary, path)
 }
 
+/** Add a new Loader entry while keeping the existing user patch byte-for-byte intact. */
+async function appendPluginPatch(path: string, existing: string, request: AddPluginRequest): Promise<void> {
+  const row = `- insert:\n    - id: ${JSON.stringify(`market:${request.name}`)}\n      name: ${JSON.stringify(request.name)}\n`
+  const content = existing.trim() === '[]'
+    ? row
+    : `${existing.endsWith('\n') ? existing : `${existing}\n`}${row}`
+  const temporary = `${path}.market.tmp`
+  await writeFile(temporary, content, 'utf8')
+  await rename(temporary, path)
+}
+
 /** Name exposed to Cordis. */
 export const name = 'market'
 /** Require only the standard Web profile services, without adding host code. */
@@ -267,6 +425,7 @@ export function apply(raw: Context): void {
   }
   const patchPath = join(fileURLToPath(ctx.baseUrl), 'cordis.patch.yml')
   const clientPath = fileURLToPath(new URL('../lib/client.js', import.meta.url))
+  const sharedProfilesRoot = profilesRoot()
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
     path: API_PATH,
@@ -291,8 +450,27 @@ export function apply(raw: Context): void {
           json(response, 200, { entries })
           return
         }
+        if (request.method === 'POST') {
+          const requestData = addPluginRequest(await requestBody(request))
+          try {
+            await access(join(sharedProfilesRoot, 'node_modules', requestData.name, 'package.json'))
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+              json(response, 409, { error: 'install the selected plugin before adding it to configuration' })
+              return
+            }
+            throw error
+          }
+          if ([...ctx.loader.entries()].some(entry => entry.options.name === requestData.name)) {
+            json(response, 409, { error: 'plugin is already present in the active configuration' })
+            return
+          }
+          await appendPluginPatch(patchPath, await readPatch(patchPath), requestData)
+          json(response, 200, { ok: true })
+          return
+        }
         if (request.method !== 'PUT') {
-          response.writeHead(405, { allow: 'GET, PUT' })
+          response.writeHead(405, { allow: 'GET, POST, PUT' })
           response.end()
           return
         }
@@ -308,6 +486,42 @@ export function apply(raw: Context): void {
       }
     },
   }), 'market: configuration route')
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: PACKAGE_API_PATH,
+    handler: async (request, response) => {
+      try {
+        if (!isLoopback(request)) {
+          json(response, 403, { error: 'plugin market is available only from loopback' })
+          return
+        }
+        if (request.method === 'GET') {
+          const url = new URL(request.url ?? PACKAGE_API_PATH, 'http://localhost')
+          const name = url.searchParams.get('name')
+          if (name !== null) {
+            if (!isMarketPackageName(name)) throw new Error('package is not in the DSH plugin namespace')
+            const [metadata, installed] = await Promise.all([npmPackageMetadata(name), installedVersion(sharedProfilesRoot, name)])
+            json(response, 200, { name, ...metadata, ...(installed === undefined ? {} : { installedVersion: installed }) })
+            return
+          }
+          json(response, 200, { packages: await npmPackages(sharedProfilesRoot) })
+          return
+        }
+        if (request.method !== 'POST') {
+          response.writeHead(405, { allow: 'GET, POST' })
+          response.end()
+          return
+        }
+        const requestData = installRequest(await requestBody(request))
+        const metadata = await npmPackageMetadata(requestData.name)
+        if (!metadata.versions.includes(requestData.version)) throw new Error('selected package version was not found on npm')
+        await installPackage(sharedProfilesRoot, requestData)
+        json(response, 200, { ok: true, installedVersion: await installedVersion(sharedProfilesRoot, requestData.name) })
+      } catch (error) {
+        json(response, 400, { error: error instanceof Error ? error.message : String(error) })
+      }
+    },
+  }), 'market: npm package route')
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
     path: CLIENT_PATH,
