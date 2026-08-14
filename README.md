@@ -9,7 +9,7 @@ pnpm dsh plugin --profile web add D:\dev\dsh\plugins\market
 pnpm dsh web
 ```
 
-Its bundle adds `dsh-plugin-market` automatically. Its `dsh.client` browser half registers **插件配置** as a first-class left-side Settings section, alongside the built-in items. The **添加插件** view queries npm for packages named `dsh-plugin*`, filters the result to that namespace, and allows a user to select an exact published version before installing it with `pnpm` into `~/.dsh/profiles/node_modules`. Scoped names in the `@scope/dsh-plugin*` namespace can be looked up by their full package name and use the same install and configuration flow.
+Its bundle adds `dsh-plugin-market` automatically. Its `dsh.client` browser half registers **插件配置** as a first-class left-side Settings section, alongside the built-in items. The **添加插件** view queries npm for packages named `dsh-*`, filters the result to that namespace, and allows a user to select an exact published version before running `dsh plugin --profile web add <package>@<version>`. Scoped names in the `@scope/dsh-*` namespace can be looked up by their full package name and use the same install and configuration flow.
 
 After installation, **添加到配置** appends an inserted Loader row for the package to the active profile's user patch. It deliberately requires installation first so a saved row is always resolvable by DSH's profile module lookup. The page reloads the active profile after the patch changes.
 

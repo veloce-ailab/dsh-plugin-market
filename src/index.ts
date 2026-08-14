@@ -6,7 +6,7 @@
  * overrides or new Loader rows to the profile patch.
  */
 
-import { access, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { access, readFile, rename, writeFile } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir } from 'node:os'
@@ -159,9 +159,9 @@ function formSchema(source: unknown): FormSchema | undefined {
   }) }
 }
 
-/** Only packages in the DSH plugin namespace are exposed or installed. */
+/** Only packages in the DSH namespace are exposed or installed. */
 function isMarketPackageName(value: string): boolean {
-  return /^(?:dsh-plugin(?:[-._a-z0-9]*)|@[a-z0-9][a-z0-9._-]*\/dsh-plugin(?:[-._a-z0-9]*))$/.test(value)
+  return /^(?:dsh-[a-z0-9][a-z0-9._-]*|@[a-z0-9][a-z0-9._-]*\/dsh-[a-z0-9][a-z0-9._-]*)$/.test(value)
 }
 
 /** Read a JSON resource with an error that is safe to show in the local UI. */
@@ -171,14 +171,14 @@ async function npmJson(url: string): Promise<unknown> {
   return response.json()
 }
 
-/** List every unscoped package whose npm name starts with dsh-plugin. */
+/** List every unscoped package whose npm name starts with dsh-. */
 async function npmPluginNames(): Promise<readonly string[]> {
-  const names: string[] = []
-  let start = 'dsh-plugin'
+  const names = new Set<string>()
+  let start = 'dsh-'
   for (;;) {
     const query = new URLSearchParams({
       startkey: JSON.stringify(start),
-      endkey: JSON.stringify('dsh-plugin\ufff0'),
+      endkey: JSON.stringify('dsh-\ufff0'),
       limit: String(PACKAGE_PAGE_SIZE),
     })
     const value = record(await npmJson(`${NPM_REPLICATION_URL}/_all_docs?${query}`))
@@ -187,11 +187,11 @@ async function npmPluginNames(): Promise<readonly string[]> {
       const id = record(row)?.id
       return typeof id === 'string' && isMarketPackageName(id) ? [id] : []
     })
-    names.push(...page)
-    if (rows.length < PACKAGE_PAGE_SIZE) return names
+    page.forEach(name => names.add(name))
+    if (rows.length < PACKAGE_PAGE_SIZE) return [...names]
     const last = record(rows.at(-1))?.id
-    if (typeof last !== 'string' || last <= start) return names
-    start = `${last}\u0000`
+    if (typeof last !== 'string' || last <= start) return [...names]
+    start = last
   }
 }
 
@@ -210,9 +210,9 @@ async function npmPackageMetadata(name: string): Promise<PackageMetadata & { des
   }
 }
 
-/** Return the shared node_modules root that DSH profile resolution reaches. */
-function profilesRoot(): string {
-  return join(process.env.USERPROFILE ?? homedir(), '.dsh', 'profiles')
+/** Return the selected Web profile managed by the DSH CLI. */
+function webProfileRoot(): string {
+  return join(process.env.USERPROFILE ?? homedir(), '.dsh', 'profiles', 'web')
 }
 
 /** Return the installed version when the shared profile dependency exists. */
@@ -244,17 +244,16 @@ async function npmPackages(root: string): Promise<readonly MarketPackage[]> {
   return packages
 }
 
-/** Run pnpm without shell interpolation so a selected package cannot execute a shell command. */
-async function installPackage(root: string, request: InstallRequest): Promise<void> {
-  await mkdir(root, { recursive: true })
-  const executable = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
+/** Delegate installation to DSH so its Web profile manifest stays authoritative. */
+async function installPackage(request: InstallRequest): Promise<void> {
+  const executable = process.platform === 'win32' ? 'dsh.cmd' : 'dsh'
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(executable, ['add', '--dir', root, `${request.name}@${request.version}`], {
+    const child = spawn(executable, ['plugin', '--profile', 'web', 'add', `${request.name}@${request.version}`], {
       stdio: 'ignore',
       windowsHide: true,
     })
-    child.once('error', error => reject(new Error(`failed to start pnpm: ${error.message}`)))
-    child.once('exit', code => code === 0 ? resolve() : reject(new Error(`pnpm failed while installing ${request.name}@${request.version}`)))
+    child.once('error', error => reject(new Error(`failed to start dsh: ${error.message}`)))
+    child.once('exit', code => code === 0 ? resolve() : reject(new Error(`dsh failed while installing ${request.name}@${request.version}`)))
   })
   packageCache = undefined
 }
@@ -425,7 +424,7 @@ export function apply(raw: Context): void {
   }
   const patchPath = join(fileURLToPath(ctx.baseUrl), 'cordis.patch.yml')
   const clientPath = fileURLToPath(new URL('../lib/client.js', import.meta.url))
-  const sharedProfilesRoot = profilesRoot()
+  const profileRoot = webProfileRoot()
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
     path: API_PATH,
@@ -453,7 +452,7 @@ export function apply(raw: Context): void {
         if (request.method === 'POST') {
           const requestData = addPluginRequest(await requestBody(request))
           try {
-            await access(join(sharedProfilesRoot, 'node_modules', requestData.name, 'package.json'))
+            await access(join(profileRoot, 'node_modules', requestData.name, 'package.json'))
           } catch (error) {
             if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
               json(response, 409, { error: 'install the selected plugin before adding it to configuration' })
@@ -500,11 +499,11 @@ export function apply(raw: Context): void {
           const name = url.searchParams.get('name')
           if (name !== null) {
             if (!isMarketPackageName(name)) throw new Error('package is not in the DSH plugin namespace')
-            const [metadata, installed] = await Promise.all([npmPackageMetadata(name), installedVersion(sharedProfilesRoot, name)])
+            const [metadata, installed] = await Promise.all([npmPackageMetadata(name), installedVersion(profileRoot, name)])
             json(response, 200, { name, ...metadata, ...(installed === undefined ? {} : { installedVersion: installed }) })
             return
           }
-          json(response, 200, { packages: await npmPackages(sharedProfilesRoot) })
+          json(response, 200, { packages: await npmPackages(profileRoot) })
           return
         }
         if (request.method !== 'POST') {
@@ -515,8 +514,8 @@ export function apply(raw: Context): void {
         const requestData = installRequest(await requestBody(request))
         const metadata = await npmPackageMetadata(requestData.name)
         if (!metadata.versions.includes(requestData.version)) throw new Error('selected package version was not found on npm')
-        await installPackage(sharedProfilesRoot, requestData)
-        json(response, 200, { ok: true, installedVersion: await installedVersion(sharedProfilesRoot, requestData.name) })
+        await installPackage(requestData)
+        json(response, 200, { ok: true, installedVersion: await installedVersion(profileRoot, requestData.name) })
       } catch (error) {
         json(response, 400, { error: error instanceof Error ? error.message : String(error) })
       }

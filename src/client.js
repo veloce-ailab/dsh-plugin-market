@@ -153,8 +153,8 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
       const packages = catalog.packages.filter(pkg => !query || `${pkg.name} ${pkg.description || ''}`.toLowerCase().includes(query))
       const lookup = () => {
         const name = packageName.trim()
-        if (!/^(?:dsh-plugin(?:[-._a-z0-9]*)|@[a-z0-9][a-z0-9._-]*\/dsh-plugin(?:[-._a-z0-9]*))$/.test(name)) {
-          setNotice('请输入 dsh-plugin* 或 @scope/dsh-plugin* 包名。')
+        if (!/^(?:dsh-[a-z0-9][a-z0-9._-]*|@[a-z0-9][a-z0-9._-]*\/dsh-[a-z0-9][a-z0-9._-]*)$/.test(name)) {
+          setNotice('请输入 dsh-* 或 @scope/dsh-* 包名。')
           return
         }
         setBusy('lookup')
@@ -169,9 +169,9 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
       return h(React.Fragment, null,
         h('label', { className: 'dsh-market-field' }, '筛选插件', h('input', { className: 'dsh-market-control', type: 'search', value: filter, placeholder: '按包名或描述筛选', onChange: event => setFilter(event.currentTarget.value) })),
         h('div', { className: 'dsh-market-actions' },
-          h('input', { className: 'dsh-market-control', type: 'text', value: packageName, placeholder: '@scope/dsh-plugin-name', onChange: event => setPackageName(event.currentTarget.value) }),
+          h('input', { className: 'dsh-market-control', type: 'text', value: packageName, placeholder: '@scope/dsh-name', onChange: event => setPackageName(event.currentTarget.value) }),
           h('button', { className: 'dsh-market-button', type: 'button', disabled: busy === 'lookup', onClick: lookup }, busy === 'lookup' ? '查询中…' : '查找范围包')),
-        h('p', { className: 'dsh-market-note' }, `共 ${packages.length} 个 npm 插件。选择版本后安装到 ${'~/.dsh/profiles/node_modules'}，再添加到当前配置。范围包可用完整包名查找。`),
+        h('p', { className: 'dsh-market-note' }, `共 ${packages.length} 个 npm 包。安装会执行 dsh plugin --profile web add，再添加到当前配置。范围包可用完整包名查找。`),
         h('div', { className: 'dsh-market-catalog' }, packages.map(pkg => {
           const available = versions[pkg.name] || (pkg.latest ? [pkg.latest] : [])
           const version = selectedVersions[pkg.name] || pkg.installedVersion || pkg.latest || available[0]
