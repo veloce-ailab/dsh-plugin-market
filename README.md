@@ -9,7 +9,7 @@ pnpm dsh plugin --profile web add D:\dev\dsh\plugins\market
 pnpm dsh web
 ```
 
-Its bundle adds `dsh-plugin-market` automatically. The plugin then adds a **插件配置** button at the lower right of the Web UI. It displays each live Loader entry's composed configuration and lets the user save an explicit profile override.
+Its bundle adds `dsh-plugin-market` automatically. Open **设置 → 插件 → 配置编辑** to view each live Loader entry's composed configuration and save an explicit profile override.
 
 The configuration endpoint is intentionally limited to loopback clients, even if the Web UI has been bound to a LAN address.
 
