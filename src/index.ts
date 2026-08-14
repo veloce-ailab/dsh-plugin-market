@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 
 const API_PATH = '/plugin-market/config'
+const CLIENT_PATH = '/plugin-market/client.js'
 const MAX_REQUEST_BYTES = 1024 * 1024
 
 interface LoaderEntry {
@@ -128,9 +129,18 @@ function formSchema(source: unknown): FormSchema | undefined {
   }) }
 }
 
-/** Escape the fallback browser payload before injecting it into index.html. */
-function scriptTag(source: string): string {
-  return `<script id="dsh-plugin-market-ui">${source.replaceAll('<', '\\u003c')}</script>`
+/** Add the market browser half to the Web kernel's authoritative boot graph. */
+function injectClientBootEntry(html: string): string {
+  const source = [
+    '<script>',
+    '(() => {',
+    'const graph = window.__DSH_BOOT__;',
+    "if (!graph || !Array.isArray(graph.entries) || graph.entries.some(entry => entry.id === 'dsh-plugin-market')) return;",
+    "graph.entries.push({ id: 'dsh-plugin-market', url: '/plugin-market/client.js', rev: 'market', inject: ['@deepseek-ai/dsh-client-runtime', '@deepseek-ai/dsh-client-ui-settings', '@deepseek-ai/dsh-client-locale'] });",
+    '})();',
+    '</script>',
+  ].join('')
+  return html.replace('</head>', `${source}</head>`)
 }
 
 /** Browser fallback for profiles that do not discover dsh.client packages. */
@@ -177,6 +187,10 @@ const BROWSER_UI = `(() => {
   };
   new MutationObserver(mount).observe(document.body, {childList:true,subtree:true}); mount();
 })();`
+
+// Retained only for a transitional reload: the actual Settings page comes
+// from the browser entry injected into __DSH_BOOT__, never from DOM mutation.
+void BROWSER_UI
 
 /** Send one no-cache JSON response. */
 function json(response: ServerResponse, status: number, value: unknown): void {
@@ -252,6 +266,7 @@ export function apply(raw: Context): void {
     throw new Error('market requires a file-based Cordis profile root')
   }
   const patchPath = join(fileURLToPath(ctx.baseUrl), 'cordis.patch.yml')
+  const clientPath = fileURLToPath(new URL('../lib/client.js', import.meta.url))
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
     path: API_PATH,
@@ -293,7 +308,19 @@ export function apply(raw: Context): void {
       }
     },
   }), 'market: configuration route')
-  ctx.effect(() => ctx.webServer.tapIndex(html => html.includes('dsh-plugin-market-ui')
-    ? html
-    : html.replace('</body>', `${scriptTag(BROWSER_UI)}</body>`)), 'market: Settings fallback')
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: CLIENT_PATH,
+    handler: async (_request, response) => {
+      try {
+        const source = await readFile(clientPath)
+        response.writeHead(200, { 'cache-control': 'no-store', 'content-type': 'text/javascript; charset=utf-8' })
+        response.end(source)
+      } catch {
+        response.writeHead(404)
+        response.end()
+      }
+    },
+  }), 'market: browser client route')
+  ctx.effect(() => ctx.webServer.tapIndex(injectClientBootEntry), 'market: browser boot entry')
 }
