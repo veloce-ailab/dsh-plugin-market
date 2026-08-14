@@ -86,6 +86,7 @@ interface CuratedPlugin {
   npm?: string
   stars?: number
   addedAt?: string
+  installedName?: string
 }
 
 let packageCache: { expiresAt: number, packages: readonly MarketPackage[] } | undefined
@@ -180,6 +181,11 @@ function isMarketPackageName(value: string): boolean {
   return /^(?:dsh-[a-z0-9][a-z0-9._-]*|@[a-z0-9][a-z0-9._-]*\/dsh-[a-z0-9][a-z0-9._-]*)$/.test(value)
 }
 
+/** Accept a normal npm package name after its on-disk installation is verified. */
+function isPackageName(value: string): boolean {
+  return /^(?:[a-z0-9][a-z0-9._-]*|@[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*)$/.test(value)
+}
+
 /** Read a JSON resource with an error that is safe to show in the local UI. */
 async function npmJson(url: string): Promise<unknown> {
   const response = await fetch(url, { headers: { accept: 'application/json' } })
@@ -211,8 +217,12 @@ function githubRepository(value: string): { owner: string, repo: string } | unde
 }
 
 /** Load and merge stars, npm mapping, and added dates from the curated list. */
-async function curatedPlugins(): Promise<readonly CuratedPlugin[]> {
-  if (curatedCache !== undefined && curatedCache.expiresAt > Date.now()) return curatedCache.plugins
+async function curatedPlugins(installed: ReadonlyMap<string, string>): Promise<readonly CuratedPlugin[]> {
+  const withInstalled = (plugins: readonly CuratedPlugin[]) => plugins.map(plugin => {
+    const installedName = installed.get(`${plugin.owner}/${plugin.repo}`)
+    return { ...plugin, ...(installedName === undefined ? {} : { installedName }) }
+  })
+  if (curatedCache !== undefined && curatedCache.expiresAt > Date.now()) return withInstalled(curatedCache.plugins)
   const [npmMapValue, starsValue, datesValue] = await Promise.all([
     curatedJson('npm-map.json'),
     curatedJson('stars.json'),
@@ -237,7 +247,7 @@ async function curatedPlugins(): Promise<readonly CuratedPlugin[]> {
     })
     .sort((left, right) => (right.stars ?? 0) - (left.stars ?? 0) || `${left.owner}/${left.repo}`.localeCompare(`${right.owner}/${right.repo}`))
   curatedCache = { expiresAt: Date.now() + PACKAGE_CACHE_MS, plugins }
-  return plugins
+  return withInstalled(plugins)
 }
 
 /** List every unscoped package whose npm name starts with dsh-. */
@@ -293,6 +303,30 @@ async function installedVersion(root: string, name: string): Promise<string | un
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
     throw error
   }
+}
+
+/** Read direct Web-profile dependencies that were installed from GitHub. */
+async function installedGitHubPackages(root: string): Promise<ReadonlyMap<string, string>> {
+  try {
+    const profile = record(JSON.parse(await readFile(join(root, 'package.json'), 'utf8')))
+    const dependencies = [profile?.dependencies, profile?.devDependencies, profile?.optionalDependencies]
+      .flatMap(value => Object.entries(record(value) ?? {}))
+    const installed = new Map<string, string>()
+    for (const [name, specifier] of dependencies) {
+      if (!isPackageName(name) || typeof specifier !== 'string' || !specifier.startsWith('github:')) continue
+      const repository = githubRepository(`https://github.com/${specifier.slice('github:'.length).split('#', 1)[0]}`)
+      if (repository !== undefined) installed.set(`${repository.owner}/${repository.repo}`, name)
+    }
+    return installed
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return new Map()
+    throw error
+  }
+}
+
+/** Find the package name recorded by dsh after a curated GitHub installation. */
+async function installedGitHubPackageName(root: string, request: GitHubInstallRequest): Promise<string | undefined> {
+  return (await installedGitHubPackages(root)).get(`${request.owner}/${request.repo}`)
 }
 
 /** Read and cache the npm directory, enriching it with local install state. */
@@ -461,7 +495,7 @@ function gitHubInstallRequest(value: unknown): GitHubInstallRequest {
 /** Narrow an add-to-configuration request to an allowed installed package. */
 function addPluginRequest(value: unknown): AddPluginRequest {
   const source = record(value)
-  if (source === undefined || !isMarketPackageName(source.name as string)) throw new Error('request.name must be a DSH plugin package')
+  if (source === undefined || !isPackageName(source.name as string)) throw new Error('request.name must be an installed npm package')
   return { name: source.name as string }
 }
 
@@ -624,7 +658,7 @@ export function apply(raw: Context): void {
           return
         }
         if (request.method === 'GET') {
-          json(response, 200, { plugins: await curatedPlugins() })
+          json(response, 200, { plugins: await curatedPlugins(await installedGitHubPackages(profileRoot)) })
           return
         }
         if (request.method !== 'POST') {
@@ -634,7 +668,7 @@ export function apply(raw: Context): void {
         }
         const requestData = gitHubInstallRequest(await requestBody(request))
         await installGitHubPlugin(requestData)
-        json(response, 200, { ok: true })
+        json(response, 200, { ok: true, packageName: await installedGitHubPackageName(profileRoot, requestData) })
       } catch (error) {
         json(response, 400, { error: error instanceof Error ? error.message : String(error) })
       }

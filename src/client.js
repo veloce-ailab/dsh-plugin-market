@@ -103,6 +103,7 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
     })
     const value = await response.json()
     if (!response.ok) throw new Error(value.error || '安装 GitHub 插件失败')
+    return value
   }
 
   function input(field, value, update) {
@@ -134,6 +135,7 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
     const [versions, setVersions] = useState({})
     const [selectedVersions, setSelectedVersions] = useState({})
     const [curated, setCurated] = useState({ kind: 'idle' })
+    const [curatedNames, setCuratedNames] = useState({})
     const [busy, setBusy] = useState()
     const refresh = () => {
       setState({ kind: 'loading' })
@@ -245,11 +247,26 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
         h('div', { className: 'dsh-market-catalog' }, plugins.map(plugin => {
           const name = `${plugin.owner}/${plugin.repo}`
           const installing = busy === `github:${name}`
+          const adding = busy === `github-add:${name}`
+          const packageName = curatedNames[name] || plugin.installedName
           const install = () => {
             setBusy(`github:${name}`)
             setNotice(`正在安装 github:${name}…`)
             void installGitHubPlugin(plugin.owner, plugin.repo)
-              .then(() => setNotice(`github:${name} 已安装到 web profile。`), error => setNotice(String(error.message || error)))
+              .then(value => {
+                if (value.packageName) setCuratedNames(current => ({ ...current, [name]: value.packageName }))
+                setNotice(value.packageName ? `github:${name} 已安装，可添加到配置。` : `github:${name} 已安装；DSH 会自动激活其中声明的 bundle。`)
+              }, error => setNotice(String(error.message || error)))
+              .finally(() => setBusy(undefined))
+          }
+          const add = () => {
+            setBusy(`github-add:${name}`)
+            setNotice(`正在将 ${packageName} 添加到配置…`)
+            void addPlugin(packageName)
+              .then(() => {
+                setNotice(`${packageName} 已添加到配置。运行中的 profile 将自动重新加载。`)
+                refresh()
+              }, error => setNotice(String(error.message || error)))
               .finally(() => setBusy(undefined))
           }
           return h('article', { key: name, className: 'dsh-market-package' },
@@ -257,7 +274,8 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
               h('div', { className: 'dsh-market-package-name' }, `github:${name}`),
               h('p', { className: 'dsh-market-package-meta' }, [plugin.npm && `npm: ${plugin.npm}`, typeof plugin.stars === 'number' && `★ ${plugin.stars}`, plugin.addedAt && `收录于 ${plugin.addedAt}`].filter(Boolean).join(' · '))),
             h('div', { className: 'dsh-market-package-actions' },
-              h('button', { className: 'dsh-market-button dsh-market-button--primary', type: 'button', disabled: installing, onClick: install }, installing ? '安装中…' : '安装')))
+              h('button', { className: 'dsh-market-button', type: 'button', disabled: installing, onClick: install }, installing ? '安装中…' : '安装'),
+              packageName && h('button', { className: 'dsh-market-button dsh-market-button--primary', type: 'button', disabled: adding, onClick: add }, adding ? '添加中…' : '添加到配置')))
         })),
         notice && h('p', { className: 'dsh-market-status', role: 'status' }, notice))
     }
