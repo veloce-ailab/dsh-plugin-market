@@ -128,11 +128,6 @@ function formSchema(source: unknown): FormSchema | undefined {
   }) }
 }
 
-/** Keep the index injection safe even when its source changes in the future. */
-function scriptTag(source: string): string {
-  return `<script id="dsh-plugin-market-ui">${source.replaceAll('<', '\\u003c')}</script>`
-}
-
 /** Browser implementation with no dependency on the host React application. */
 const BROWSER_UI = `(() => {
   const api = '/plugin-market/config';
@@ -177,6 +172,10 @@ const BROWSER_UI = `(() => {
   };
   new MutationObserver(mount).observe(document.body, {childList:true,subtree:true}); mount();
 })();`
+
+// Kept out of the page: current installations can replace their bundle without
+// a stale DOM-injected panel being mounted alongside the dsh.client Settings page.
+void BROWSER_UI
 
 /** Send one no-cache JSON response. */
 function json(response: ServerResponse, status: number, value: unknown): void {
@@ -293,7 +292,4 @@ export function apply(raw: Context): void {
       }
     },
   }), 'market: configuration route')
-  ctx.effect(() => ctx.webServer.tapIndex(html => html.includes('dsh-plugin-market-ui')
-    ? html
-    : html.replace('</body>', `${scriptTag(BROWSER_UI)}</body>`)), 'market: configuration panel')
 }

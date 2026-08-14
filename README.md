@@ -9,7 +9,7 @@ pnpm dsh plugin --profile web add D:\dev\dsh\plugins\market
 pnpm dsh web
 ```
 
-Its bundle adds `dsh-plugin-market` automatically. Open **设置 → 插件配置** to select a live Loader entry and save an explicit profile override. The form is built from Schemastery or Zod `Config` schemas; complex or unknown schemas fall back to a JSON editor.
+Its bundle adds `dsh-plugin-market` automatically. Its `dsh.client` browser half registers **插件配置** as a first-class left-side Settings section, alongside the built-in items. The page selects a live Loader entry and saves an explicit profile override. The form is built from Schemastery or Zod `Config` schemas; complex or unknown schemas fall back to a JSON editor.
 
 The configuration endpoint is intentionally limited to loopback clients, even if the Web UI has been bound to a LAN address.
 
