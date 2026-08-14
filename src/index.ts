@@ -315,9 +315,12 @@ async function npmPackages(root: string): Promise<readonly MarketPackage[]> {
 
 /** Delegate installation to DSH so its Web profile manifest stays authoritative. */
 async function installDshPlugin(specifier: string): Promise<void> {
-  const executable = process.platform === 'win32' ? 'dsh.cmd' : 'dsh'
+  const executable = process.platform === 'win32' ? process.env.ComSpec ?? 'cmd.exe' : 'dsh'
+  const childArgs = process.platform === 'win32'
+    ? ['/d', '/s', '/c', `dsh.cmd plugin --profile web add ${specifier}`]
+    : ['plugin', '--profile', 'web', 'add', specifier]
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(executable, ['plugin', '--profile', 'web', 'add', specifier], {
+    const child = spawn(executable, childArgs, {
       stdio: 'ignore',
       windowsHide: true,
     })
