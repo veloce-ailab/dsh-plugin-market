@@ -11,6 +11,8 @@ pnpm dsh web
 
 Its bundle adds `dsh-plugin-market` automatically. Its `dsh.client` browser half registers **插件配置** as a first-class left-side Settings section, alongside the built-in items. The **添加插件** view queries npm for packages named `dsh-*`, filters the result to that namespace, and allows a user to select an exact published version before running `dsh plugin --profile web add <package>@<version>`. Scoped names in the `@scope/dsh-*` namespace can be looked up by their full package name and use the same install and configuration flow.
 
+The **GitHub 精选** view reads the stars, npm mapping, and added-date data published by [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/tree/main/data). Its install action runs `dsh plugin --profile web add github:<owner>/<repo>` for the selected repository.
+
 After installation, **添加到配置** appends an inserted Loader row for the package to the active profile's user patch. It deliberately requires installation first so a saved row is always resolvable by DSH's profile module lookup. The page reloads the active profile after the patch changes.
 
 The configuration endpoint is intentionally limited to loopback clients, even if the Web UI has been bound to a LAN address.

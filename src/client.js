@@ -5,6 +5,7 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
   const { createElement: h, useEffect, useMemo, useState } = React
   const api = '/plugin-market/config'
   const packageApi = '/plugin-market/packages'
+  const curatedApi = '/plugin-market/curated'
   const styles = `
     .dsh-market-settings{display:flex;flex-direction:column;gap:14px;width:100%;max-width:760px;color:var(--dsw-alias-label-primary)}
     .dsh-market-heading,.dsh-market-intro,.dsh-market-note,.dsh-market-status{margin:0}
@@ -87,6 +88,23 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
     if (!response.ok) throw new Error(value.error || '添加插件失败')
   }
 
+  async function readCuratedPlugins() {
+    const response = await fetch(curatedApi, { cache: 'no-store' })
+    const value = await response.json()
+    if (!response.ok) throw new Error(value.error || '读取 GitHub 精选失败')
+    return value.plugins
+  }
+
+  async function installGitHubPlugin(owner, repo) {
+    const response = await fetch(curatedApi, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ owner, repo }),
+    })
+    const value = await response.json()
+    if (!response.ok) throw new Error(value.error || '安装 GitHub 插件失败')
+  }
+
   function input(field, value, update) {
     const label = `${field.key}${field.required ? ' *' : ''}${field.description ? ` — ${field.description}` : ''}`
     if (field.type === 'boolean') return h('label', { key: field.key, className: 'dsh-market-field dsh-market-field--boolean' },
@@ -115,6 +133,7 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
     const [packageName, setPackageName] = useState('')
     const [versions, setVersions] = useState({})
     const [selectedVersions, setSelectedVersions] = useState({})
+    const [curated, setCurated] = useState({ kind: 'idle' })
     const [busy, setBusy] = useState()
     const refresh = () => {
       setState({ kind: 'loading' })
@@ -126,10 +145,16 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
       setCatalog({ kind: 'loading' })
       void readPackages().then(packages => setCatalog({ kind: 'ready', packages }), error => setCatalog({ kind: 'error', error: String(error.message || error) }))
     }, [mode, catalog.kind])
+    useEffect(() => {
+      if (mode !== 'curated' || curated.kind !== 'idle') return
+      setCurated({ kind: 'loading' })
+      void readCuratedPlugins().then(plugins => setCurated({ kind: 'ready', plugins }), error => setCurated({ kind: 'error', error: String(error.message || error) }))
+    }, [mode, curated.kind])
     const page = content => h(React.Fragment, null, h('style', null, styles), content)
     const tabs = h('div', { className: 'dsh-market-tabs' },
       h('button', { className: 'dsh-market-button dsh-market-button--tab', type: 'button', 'aria-current': mode === 'config' ? 'true' : undefined, onClick: () => setMode('config') }, '已配置插件'),
-      h('button', { className: 'dsh-market-button dsh-market-button--tab', type: 'button', 'aria-current': mode === 'market' ? 'true' : undefined, onClick: () => setMode('market') }, '添加插件'))
+      h('button', { className: 'dsh-market-button dsh-market-button--tab', type: 'button', 'aria-current': mode === 'market' ? 'true' : undefined, onClick: () => setMode('market') }, '添加 npm 插件'),
+      h('button', { className: 'dsh-market-button dsh-market-button--tab', type: 'button', 'aria-current': mode === 'curated' ? 'true' : undefined, onClick: () => setMode('curated') }, 'GitHub 精选'))
     const entries = state.kind === 'ready' ? state.value.entries : []
     const entry = useMemo(() => entries.find(item => item.id === selectedId) || entries[0], [entries, selectedId])
     useEffect(() => { if (entry) { setSelectedId(entry.id); setDraft(JSON.parse(JSON.stringify(entry.config || {}))); setNotice(undefined) } }, [entry && entry.id])
@@ -209,7 +234,35 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
         })),
         notice && h('p', { className: 'dsh-market-status', role: 'status' }, notice))
     }
+    const curatedMarket = () => {
+      if (curated.kind === 'idle' || curated.kind === 'loading') return h('p', { className: 'dsh-market-status' }, '正在读取 GitHub 精选列表…')
+      if (curated.kind === 'error') return h('div', { className: 'dsh-market-actions' }, h('p', { className: 'dsh-market-status dsh-market-error', role: 'alert' }, curated.error), h('button', { className: 'dsh-market-button', type: 'button', onClick: () => setCurated({ kind: 'idle' }) }, '重试'))
+      const query = filter.trim().toLowerCase()
+      const plugins = curated.plugins.filter(plugin => !query || `${plugin.owner}/${plugin.repo} ${plugin.npm || ''}`.toLowerCase().includes(query))
+      return h(React.Fragment, null,
+        h('label', { className: 'dsh-market-field' }, '筛选精选插件', h('input', { className: 'dsh-market-control', type: 'search', value: filter, placeholder: '按仓库或 npm 包名筛选', onChange: event => setFilter(event.currentTarget.value) })),
+        h('p', { className: 'dsh-market-note' }, `共 ${plugins.length} 个来自 awesome-dsh-plugin 的精选仓库。安装会执行 dsh plugin --profile web add github:<owner>/<repo>。`),
+        h('div', { className: 'dsh-market-catalog' }, plugins.map(plugin => {
+          const name = `${plugin.owner}/${plugin.repo}`
+          const installing = busy === `github:${name}`
+          const install = () => {
+            setBusy(`github:${name}`)
+            setNotice(`正在安装 github:${name}…`)
+            void installGitHubPlugin(plugin.owner, plugin.repo)
+              .then(() => setNotice(`github:${name} 已安装到 web profile。`), error => setNotice(String(error.message || error)))
+              .finally(() => setBusy(undefined))
+          }
+          return h('article', { key: name, className: 'dsh-market-package' },
+            h('div', null,
+              h('div', { className: 'dsh-market-package-name' }, `github:${name}`),
+              h('p', { className: 'dsh-market-package-meta' }, [plugin.npm && `npm: ${plugin.npm}`, typeof plugin.stars === 'number' && `★ ${plugin.stars}`, plugin.addedAt && `收录于 ${plugin.addedAt}`].filter(Boolean).join(' · '))),
+            h('div', { className: 'dsh-market-package-actions' },
+              h('button', { className: 'dsh-market-button dsh-market-button--primary', type: 'button', disabled: installing, onClick: install }, installing ? '安装中…' : '安装')))
+        })),
+        notice && h('p', { className: 'dsh-market-status', role: 'status' }, notice))
+    }
     if (mode === 'market') return page(h('section', { className: 'dsh-market-settings' }, h('h2', { className: 'dsh-market-heading' }, '添加插件'), tabs, market()))
+    if (mode === 'curated') return page(h('section', { className: 'dsh-market-settings' }, h('h2', { className: 'dsh-market-heading' }, 'GitHub 精选插件'), tabs, curatedMarket()))
     if (state.kind === 'loading') return page(h('p', { className: 'dsh-market-status' }, '正在读取插件配置…'))
     if (state.kind === 'error') return page(h('div', { className: 'dsh-market-settings' }, h('p', { className: 'dsh-market-status dsh-market-error', role: 'alert' }, state.error), h('button', { className: 'dsh-market-button', type: 'button', onClick: refresh }, '重试')))
     if (!entry) return page(h('p', { className: 'dsh-market-status' }, '没有可编辑的插件。'))

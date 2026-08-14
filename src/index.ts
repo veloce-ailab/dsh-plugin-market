@@ -16,10 +16,12 @@ import type { Context } from '@deepseek-ai/cordis'
 
 const API_PATH = '/plugin-market/config'
 const PACKAGE_API_PATH = '/plugin-market/packages'
+const CURATED_API_PATH = '/plugin-market/curated'
 const CLIENT_PATH = '/plugin-market/client.js'
 const MAX_REQUEST_BYTES = 1024 * 1024
 const NPM_REPLICATION_URL = 'https://replicate.npmjs.com'
 const NPM_REGISTRY_URL = 'https://registry.npmjs.org'
+const AWESOME_DSH_RAW_URL = 'https://raw.githubusercontent.com/awesome-dsh-plugin/awesome-dsh-plugin/main/data'
 const PACKAGE_PAGE_SIZE = 200
 const PACKAGE_CACHE_MS = 5 * 60 * 1000
 
@@ -61,6 +63,11 @@ interface InstallRequest {
   version: string
 }
 
+interface GitHubInstallRequest {
+  owner: string
+  repo: string
+}
+
 interface MarketPackage {
   name: string
   description?: string
@@ -73,7 +80,16 @@ interface PackageMetadata {
   latest?: string
 }
 
+interface CuratedPlugin {
+  owner: string
+  repo: string
+  npm?: string
+  stars?: number
+  addedAt?: string
+}
+
 let packageCache: { expiresAt: number, packages: readonly MarketPackage[] } | undefined
+let curatedCache: { expiresAt: number, plugins: readonly CuratedPlugin[] } | undefined
 
 /** One schema-derived top-level field understood by the browser form. */
 interface FormField {
@@ -171,6 +187,59 @@ async function npmJson(url: string): Promise<unknown> {
   return response.json()
 }
 
+/** Read a JSON file published by the curated GitHub plugin list. */
+async function curatedJson(name: string): Promise<unknown> {
+  const response = await fetch(`${AWESOME_DSH_RAW_URL}/${name}`, { headers: { accept: 'application/json' } })
+  if (!response.ok) throw new Error(`curated plugin list request failed (${response.status})`)
+  return response.json()
+}
+
+/** Turn a GitHub repository URL into the safe owner/repository pair for dsh. */
+function githubRepository(value: string): { owner: string, repo: string } | undefined {
+  try {
+    const url = new URL(value)
+    const path = url.hostname === 'github.com' ? url.pathname.split('/').filter(Boolean) : []
+    if (url.protocol !== 'https:' || path.length !== 2) return undefined
+    const [owner, repo] = path
+    if (owner === undefined || repo === undefined) return undefined
+    return /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(owner) && /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(repo)
+      ? { owner, repo }
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Load and merge stars, npm mapping, and added dates from the curated list. */
+async function curatedPlugins(): Promise<readonly CuratedPlugin[]> {
+  if (curatedCache !== undefined && curatedCache.expiresAt > Date.now()) return curatedCache.plugins
+  const [npmMapValue, starsValue, datesValue] = await Promise.all([
+    curatedJson('npm-map.json'),
+    curatedJson('stars.json'),
+    curatedJson('added-dates.json'),
+  ])
+  const npmMap = record(npmMapValue) ?? {}
+  const stars = record(starsValue) ?? {}
+  const dates = record(datesValue) ?? {}
+  const plugins = [...new Set([...Object.keys(npmMap), ...Object.keys(stars), ...Object.keys(dates)])]
+    .flatMap(url => {
+      const repository = githubRepository(url)
+      if (repository === undefined) return []
+      const npm = record(npmMap[url])?.npm
+      const starCount = record(stars[url])?.stars
+      const addedAt = dates[url]
+      return [{
+        ...repository,
+        ...(typeof npm === 'string' ? { npm } : {}),
+        ...(typeof starCount === 'number' ? { stars: starCount } : {}),
+        ...(typeof addedAt === 'string' ? { addedAt } : {}),
+      }]
+    })
+    .sort((left, right) => (right.stars ?? 0) - (left.stars ?? 0) || `${left.owner}/${left.repo}`.localeCompare(`${right.owner}/${right.repo}`))
+  curatedCache = { expiresAt: Date.now() + PACKAGE_CACHE_MS, plugins }
+  return plugins
+}
+
 /** List every unscoped package whose npm name starts with dsh-. */
 async function npmPluginNames(): Promise<readonly string[]> {
   const names = new Set<string>()
@@ -245,17 +314,27 @@ async function npmPackages(root: string): Promise<readonly MarketPackage[]> {
 }
 
 /** Delegate installation to DSH so its Web profile manifest stays authoritative. */
-async function installPackage(request: InstallRequest): Promise<void> {
+async function installDshPlugin(specifier: string): Promise<void> {
   const executable = process.platform === 'win32' ? 'dsh.cmd' : 'dsh'
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(executable, ['plugin', '--profile', 'web', 'add', `${request.name}@${request.version}`], {
+    const child = spawn(executable, ['plugin', '--profile', 'web', 'add', specifier], {
       stdio: 'ignore',
       windowsHide: true,
     })
     child.once('error', error => reject(new Error(`failed to start dsh: ${error.message}`)))
-    child.once('exit', code => code === 0 ? resolve() : reject(new Error(`dsh failed while installing ${request.name}@${request.version}`)))
+    child.once('exit', code => code === 0 ? resolve() : reject(new Error(`dsh failed while installing ${specifier}`)))
   })
   packageCache = undefined
+}
+
+/** Install one exact npm package version into the Web profile. */
+async function installPackage(request: InstallRequest): Promise<void> {
+  await installDshPlugin(`${request.name}@${request.version}`)
+}
+
+/** Install one curated GitHub repository into the Web profile. */
+async function installGitHubPlugin(request: GitHubInstallRequest): Promise<void> {
+  await installDshPlugin(`github:${request.owner}/${request.repo}`)
 }
 
 /** Add the market browser half to the Web kernel's authoritative boot graph. */
@@ -363,6 +442,17 @@ function installRequest(value: unknown): InstallRequest {
     throw new Error('request.version must be an exact published version')
   }
   return { name: source.name as string, version: source.version }
+}
+
+/** Narrow a curated GitHub install request to one owner/repository pair. */
+function gitHubInstallRequest(value: unknown): GitHubInstallRequest {
+  const source = record(value)
+  const owner = typeof source?.owner === 'string' ? source.owner : undefined
+  const repo = typeof source?.repo === 'string' ? source.repo : undefined
+  if (owner === undefined || repo === undefined || !githubRepository(`https://github.com/${owner}/${repo}`)) {
+    throw new Error('request must identify one GitHub owner and repository')
+  }
+  return { owner, repo }
 }
 
 /** Narrow an add-to-configuration request to an allowed installed package. */
@@ -521,6 +611,32 @@ export function apply(raw: Context): void {
       }
     },
   }), 'market: npm package route')
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: CURATED_API_PATH,
+    handler: async (request, response) => {
+      try {
+        if (!isLoopback(request)) {
+          json(response, 403, { error: 'curated plugins are available only from loopback' })
+          return
+        }
+        if (request.method === 'GET') {
+          json(response, 200, { plugins: await curatedPlugins() })
+          return
+        }
+        if (request.method !== 'POST') {
+          response.writeHead(405, { allow: 'GET, POST' })
+          response.end()
+          return
+        }
+        const requestData = gitHubInstallRequest(await requestBody(request))
+        await installGitHubPlugin(requestData)
+        json(response, 200, { ok: true })
+      } catch (error) {
+        json(response, 400, { error: error instanceof Error ? error.message : String(error) })
+      }
+    },
+  }), 'market: curated GitHub route')
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
     path: CLIENT_PATH,
