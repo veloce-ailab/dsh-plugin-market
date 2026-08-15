@@ -13,10 +13,13 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
+import { parsePluginSource } from './manifest.js'
+import { readGlobalPluginCatalog, readPluginSources, validatePluginSource, writePluginSources } from './sources.js'
 
 const API_PATH = '/plugin-market/config'
 const PACKAGE_API_PATH = '/plugin-market/packages'
 const CURATED_API_PATH = '/plugin-market/curated'
+const SOURCES_API_PATH = '/plugin-market/sources'
 const INSTALLED_API_PATH = '/plugin-market/installed'
 const CLIENT_PATH = '/plugin-market/client.js'
 const MAX_REQUEST_BYTES = 1024 * 1024
@@ -765,6 +768,60 @@ export function apply(raw: Context): void {
   }), 'market: curated GitHub route')
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
+    path: SOURCES_API_PATH,
+    handler: async (request, response) => {
+      try {
+        if (!isLoopback(request)) {
+          json(response, 403, { error: 'plugin sources are available only from loopback' })
+          return
+        }
+        if (request.method === 'GET') {
+          json(response, 200, { sources: await readPluginSources(), catalogs: await readGlobalPluginCatalog() })
+          return
+        }
+        const body = record(await requestBody(request))
+        if (body === undefined || typeof body.id !== 'string') throw new Error('source id is required')
+        const sources = [...await readPluginSources()]
+        const index = sources.findIndex(source => source.id === body.id)
+        if (request.method === 'POST') {
+          if (index !== -1) throw new Error(`plugin source already exists: ${body.id}`)
+          const source = parsePluginSource({ ...body, enabled: body.enabled !== false })
+          const manifest = await validatePluginSource(source)
+          await writePluginSources([...sources, source])
+          json(response, 200, { ok: true, source, manifest })
+          return
+        }
+        if (request.method === 'PUT') {
+          if (index === -1) {
+            json(response, 404, { error: 'plugin source was not found' })
+            return
+          }
+          const current = sources[index]
+          const source = parsePluginSource({ ...current, enabled: body.enabled !== false })
+          sources[index] = source
+          await writePluginSources(sources)
+          json(response, 200, { ok: true, source })
+          return
+        }
+        if (request.method === 'DELETE') {
+          if (index === -1) {
+            json(response, 404, { error: 'plugin source was not found' })
+            return
+          }
+          sources.splice(index, 1)
+          await writePluginSources(sources)
+          json(response, 200, { ok: true })
+          return
+        }
+        response.writeHead(405, { allow: 'GET, POST, PUT, DELETE' })
+        response.end()
+      } catch (error) {
+        json(response, 400, { error: error instanceof Error ? error.message : String(error) })
+      }
+    },
+  }), 'market: global plugin source route')
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
     path: INSTALLED_API_PATH,
     handler: async (request, response) => {
       try {
@@ -809,3 +866,7 @@ export function apply(raw: Context): void {
   }), 'market: browser client route')
   ctx.effect(() => ctx.webServer.tapIndex(injectClientBootEntry), 'market: browser boot entry')
 }
+
+
+
+export { parsePluginManifest, parsePluginManifestEntry, parsePluginSource, readPluginManifest } from './manifest.js'

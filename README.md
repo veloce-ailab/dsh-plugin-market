@@ -22,3 +22,21 @@ The configuration endpoint is intentionally limited to loopback clients, even if
 Saving appends one id-targeted row to the active profile's `cordis.patch.yml`. Adding a package similarly appends only its one inserted row. Existing YAML is never re-serialized, so comments and every untouched user patch stay unchanged. Clicking Save always appends an explicit patch, including when the value equals the current effective configuration.
 
 Cordis replaces a whole `config` value for an id-targeted patch; it does not merge individual fields. The editor therefore saves the complete JSON configuration for the selected plugin. A true generic per-field patch cannot be implemented only by this plugin because the underlying Cordis patch format has no field-level operation.
+
+## 自定义全局插件源
+
+设置页中的 **插件源** 标签会把配置持久化到当前用户的 `~/.dsh/plugin-sources.json`，而不是单个 Web profile。添加源时，市场会立即通过 HTTPS 下载并验证 manifest；可以随后启用、停用、删除源，并在同一标签页直接安装其中的 npm 或 GitHub 插件。
+
+manifest 必须为 JSON，`manifestVersion` 固定为 `1`，且 manifest 与每一条插件记录都必须含有非空 `author`。`star` 是可选的非负数。插件 `source` 只能是 `npm` 或 `github`：npm 使用 `package`（省略时回退为 `name`），GitHub 使用严格的 `https://github.com/<owner>/<repo>` `repository` URL。
+
+```json
+{
+  "manifestVersion": 1,
+  "name": "Example Plugin Source",
+  "author": "Example Team",
+  "plugins": [
+    { "name": "dsh-example", "author": "Example Team", "source": "npm", "package": "dsh-example", "version": "1.2.3", "star": 42 },
+    { "name": "example-github", "author": "Example Team", "source": "github", "repository": "https://github.com/example/dsh-example", "star": 12 }
+  ]
+}
+```

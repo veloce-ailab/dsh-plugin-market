@@ -7,6 +7,7 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
   const packageApi = '/plugin-market/packages'
   const curatedApi = '/plugin-market/curated'
   const installedApi = '/plugin-market/installed'
+  const sourcesApi = '/plugin-market/sources'
   const styles = `
     .dsh-market-settings{display:flex;flex-direction:column;gap:14px;width:100%;max-width:760px;color:var(--dsw-alias-label-primary)}
     .dsh-market-heading,.dsh-market-intro,.dsh-market-note,.dsh-market-status{margin:0}
@@ -48,6 +49,29 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
     @media (max-width:640px){.dsh-market-package{grid-template-columns:1fr}.dsh-market-package-actions{justify-content:flex-start}}
   `
 
+  async function readSources() {
+    const response = await fetch(sourcesApi, { cache: 'no-store' })
+    const value = await response.json()
+    if (!response.ok) throw new Error(value.error || '读取插件源失败')
+    return value
+  }
+  async function createSource(source) {
+    const response = await fetch(sourcesApi, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(source) })
+    const value = await response.json()
+    if (!response.ok) throw new Error(value.error || '添加插件源失败')
+    return value
+  }
+  async function setSourceEnabled(id, enabled) {
+    const response = await fetch(sourcesApi, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, enabled }) })
+    const value = await response.json()
+    if (!response.ok) throw new Error(value.error || '更新插件源失败')
+    return value
+  }
+  async function removeSource(id) {
+    const response = await fetch(sourcesApi, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) })
+    const value = await response.json()
+    if (!response.ok) throw new Error(value.error || '删除插件源失败')
+  }
   async function readConfig() {
     const response = await fetch(api, { cache: 'no-store' })
     const value = await response.json()
@@ -169,6 +193,8 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
     const [selectedPlugin, setSelectedPlugin] = useState()
     const [configuredNames, setConfiguredNames] = useState({})
     const [busy, setBusy] = useState()
+    const [sources, setSources] = useState({ kind: 'idle' })
+    const [sourceDraft, setSourceDraft] = useState({ id: '', name: '', url: '' })
     const refresh = () => {
       setState({ kind: 'loading' })
       void readConfig().then(value => setState({ kind: 'ready', value }), error => setState({ kind: 'error', error: String(error.message || error) }))
@@ -194,7 +220,18 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
       h('button', { className: 'dsh-market-button dsh-market-button--tab', type: 'button', role: 'tab', 'aria-selected': mode === 'config', 'data-active': mode === 'config' ? 'true' : undefined, onClick: () => { setSelectedPlugin(undefined); setMode('config') } }, '已配置插件'),
       h('button', { className: 'dsh-market-button dsh-market-button--tab', type: 'button', role: 'tab', 'aria-selected': mode === 'market', 'data-active': mode === 'market' ? 'true' : undefined, onClick: () => { setSelectedPlugin(undefined); setMode('market') } }, '添加 npm 插件'),
       h('button', { className: 'dsh-market-button dsh-market-button--tab', type: 'button', role: 'tab', 'aria-selected': mode === 'curated', 'data-active': mode === 'curated' ? 'true' : undefined, onClick: () => { setSelectedPlugin(undefined); setMode('curated') } }, 'GitHub 精选'),
-      h('button', { className: 'dsh-market-button dsh-market-button--tab', type: 'button', role: 'tab', 'aria-selected': mode === 'uninstall', 'data-active': mode === 'uninstall' ? 'true' : undefined, onClick: () => { setSelectedPlugin(undefined); setMode('uninstall') } }, '卸载插件'))
+      h('button', { className: 'dsh-market-button dsh-market-button--tab', type: 'button', role: 'tab', 'aria-selected': mode === 'uninstall', 'data-active': mode === 'uninstall' ? 'true' : undefined, onClick: () => { setSelectedPlugin(undefined); setMode('uninstall') } }, '卸载插件'),
+       h('button', { className: 'dsh-market-button dsh-market-button--tab', type: 'button', role: 'tab', 'aria-selected': mode === 'sources', 'data-active': mode === 'sources' ? 'true' : undefined, onClick: () => { setSelectedPlugin(undefined); setMode('sources') } }, '插件源'))
+    const loadSources = () => { setSources({ kind: "loading" }); void readSources().then(value => setSources({ kind: "ready", ...value }), error => setSources({ kind: "error", error: String(error.message || error) })) }
+    useEffect(() => { if (mode === "sources" && sources.kind === "idle") loadSources() }, [mode, sources.kind])
+    const sourceManager = () => {
+      if (sources.kind !== "ready") return h("p", { className: "dsh-market-status" }, sources.kind === "error" ? sources.error : "正在读取全局插件源…")
+      const add = () => { const id = window.prompt("插件源标识"); const name = window.prompt("插件源名称"); const url = window.prompt("HTTPS manifest URL"); if (!id || !name || !url) return; void createSource({ id, name, url }).then(loadSources, error => setNotice(String(error.message || error))) }
+      const installManifestPlugin = plugin => { const task = plugin.source === "npm" ? readPackage(plugin.package || plugin.name).then(detail => installPackage(plugin.package || plugin.name, plugin.version || detail.versions[0])) : (() => { const parts = new URL(plugin.repository).pathname.split("/").filter(Boolean); return installGitHubPlugin(parts[0], parts[1]) })(); void task.then(() => setNotice(plugin.name + " 已安装。"), error => setNotice(String(error.message || error))) }
+      const catalogCards = sources.catalogs.flatMap(catalog => catalog.plugins.map(plugin => h("article", { key: catalog.sourceId + ":" + plugin.name, className: "dsh-market-package" }, h("div", null, h("div", { className: "dsh-market-package-name" }, plugin.displayName || plugin.name), h("p", { className: "dsh-market-package-meta" }, plugin.author + " · " + plugin.source + (plugin.star === undefined ? "" : " · ★ " + plugin.star)), h("p", { className: "dsh-market-package-description" }, plugin.description || "")), h("div", { className: "dsh-market-package-actions" }, h("button", { className: "dsh-market-button dsh-market-button--primary", type: "button", onClick: () => installManifestPlugin(plugin) }, "安装"))))
+      return h("div", { className: "dsh-market-catalog" }, h("p", { className: "dsh-market-intro" }, "插件源保存在当前用户的全局 DSH 配置中。"), h("div", { className: "dsh-market-actions" }, h("button", { className: "dsh-market-button dsh-market-button--primary", type: "button", onClick: add }, "添加插件源"), h("button", { className: "dsh-market-button", type: "button", onClick: loadSources }, "刷新")), sources.sources.map(source => h("article", { key: source.id, className: "dsh-market-package" }, h("div", null, h("div", { className: "dsh-market-package-name" }, source.name), h("p", { className: "dsh-market-package-meta" }, `${source.id} · ${source.enabled ? "已启用" : "已停用"}`), h("p", { className: "dsh-market-package-description" }, source.url)), h("div", { className: "dsh-market-package-actions" }, h("button", { className: "dsh-market-button", type: "button", onClick: () => void setSourceEnabled(source.id, !source.enabled).then(loadSources) }, source.enabled ? "停用" : "启用"), h("button", { className: "dsh-market-button dsh-market-error", type: "button", onClick: () => void removeSource(source.id).then(loadSources) }, "删除")))), catalogCards, h("p", { className: "dsh-market-note" }, `已从启用插件源读取 ${sources.catalogs.reduce((total, catalog) => total + catalog.plugins.length, 0)} 个插件。`))
+    }
+
     const entries = state.kind === 'ready' ? state.value.entries : []
     const isConfigured = name => configuredNames[name] === true || entries.some(entry => entry.name === name)
     const entry = useMemo(() => entries.find(item => item.id === selectedId) || entries[0], [entries, selectedId])
@@ -379,6 +416,7 @@ window.__ModuleLoader__.load({ id: 'dsh-plugin-market', factory: (require) => {
     if (mode === 'market') return page(h(React.Fragment, null, h('section', { className: 'dsh-market-settings' }, h('h2', { className: 'dsh-market-heading' }, '添加插件'), tabs, market()), details()))
     if (mode === 'curated') return page(h(React.Fragment, null, h('section', { className: 'dsh-market-settings' }, h('h2', { className: 'dsh-market-heading' }, 'GitHub 精选插件'), tabs, curatedMarket()), details()))
     if (mode === 'uninstall') return page(h(React.Fragment, null, h('section', { className: 'dsh-market-settings' }, h('h2', { className: 'dsh-market-heading' }, '卸载插件'), tabs, uninstallMarket()), details()))
+    if (mode === 'sources') return page(h('section', { className: 'dsh-market-settings' }, h('h2', { className: 'dsh-market-heading' }, '全局插件源'), tabs, sourceManager(), notice && h('p', { className: 'dsh-market-status', role: 'status' }, notice)))
     if (state.kind === 'loading') return page(h('p', { className: 'dsh-market-status' }, '正在读取插件配置…'))
     if (state.kind === 'error') return page(h('div', { className: 'dsh-market-settings' }, h('p', { className: 'dsh-market-status dsh-market-error', role: 'alert' }, state.error), h('button', { className: 'dsh-market-button', type: 'button', onClick: refresh }, '重试')))
     if (!entry) return page(h('p', { className: 'dsh-market-status' }, '没有可编辑的插件。'))
